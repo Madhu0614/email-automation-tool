@@ -11,11 +11,15 @@ def root():
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://email-automation-tool-omega.vercel.app/config"],  # or "*" for all
+    allow_origins=[
+        "http://localhost:3000", 
+        "https://email-automation-tool-omega.vercel.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # Prefix only once
 app.include_router(gmail_oauth.router, prefix="/oauth2", tags=["Gmail OAuth"])
 app.include_router(microsoft_oauth.router, prefix="/oauth2", tags=["Microsoft OAuth"])
