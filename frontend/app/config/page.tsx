@@ -78,7 +78,7 @@ export default function ConfigPage() {
 
   const handleMicrosoftOAuth = async () => {
     try {
-      const res = await fetch("http://localhost:8000/oauth2/login/microsoft", {
+      const res = await fetch(`${API_BASE_URL}/oauth2/login/microsoft`, {
         method: "GET",
         credentials: "include",
       });
