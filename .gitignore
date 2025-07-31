@@ -1,3 +1,2 @@
-"backend/gmail_oauth_backend/.env" 
-"frontend/.env"
-"backend/gmail_oauth_backend/.env" 
+*.env
+**/.env
