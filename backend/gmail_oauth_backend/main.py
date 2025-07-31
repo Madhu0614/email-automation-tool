@@ -4,6 +4,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routes import email_accounts
 
 app = FastAPI()
+
+@app.get("/")
+def root():
+    return {"status": "FastAPI backend running on Render"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],  # or "*" for all
