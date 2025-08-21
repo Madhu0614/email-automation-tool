@@ -126,83 +126,83 @@ export default function UploadPage() {
   ];
 
   // Add the preview function here
-// Add the preview function here
-const previewCSVData = async (list: EmailList) => {
-  if (!list.file_path) { // Fixed: removed backslashes
-    alert('No file uploaded for this list');
-    return;
-  }
-
-  setIsLoadingPreview(true);
-  setPreviewListName(list.name);
-  
-  try {
-    const { data: fileData } = supabase.storage
-      .from('csv-uploads')
-      .getPublicUrl(list.file_path); // Fixed: removed backslashes
-
-    if (!fileData?.publicUrl) {
-      alert('Unable to get file URL');
+  // Add the preview function here
+  const previewCSVData = async (list: EmailList) => {
+    if (!list.file_path) {
+      alert('No file uploaded for this list');
       return;
     }
 
-    const response = await fetch(fileData.publicUrl);
-    const csvText = await response.text();
+    setIsLoadingPreview(true);
+    setPreviewListName(list.name);
     
-    console.log('Raw CSV (first 300 chars):', csvText.substring(0, 300));
-    
-    // Use Papa Parse with proper configuration
-    const results = Papa.parse(csvText, {
-      skipEmptyLines: true,
-      header: false,
-      delimiter: ',',
-    });
-    
-    console.log('Papa Parse results:', results);
-    console.log('First row (headers):', results.data[0]);
-    console.log('Second row:', results.data[1]); // Fixed: changed from [2] to [1]
+    try {
+      const { data: fileData } = supabase.storage
+        .from('csv-uploads')
+        .getPublicUrl(list.file_path);
 
-    let csvRows = results.data as string[][];
-    
-    // Fixed: Check if first row has only 1 column, not if csvRows has 1 row
-    if (csvRows.length > 0 && csvRows[0].length === 1) {
-      console.log('Forcing header split...');
-      // Fixed: Get the first string from first row
-      const headerString = csvRows[0][0]; // Get the first element (string)
-      csvRows = [headerString.split(',').map(h => h.trim())];
+      if (!fileData?.publicUrl) {
+        alert('Unable to get file URL');
+        return;
+      }
+
+      const response = await fetch(fileData.publicUrl);
+      const csvText = await response.text();
+      
+      console.log('Raw CSV (first 300 chars):', csvText.substring(0, 300));
+      
+      // Use Papa Parse with proper configuration
+      const results = Papa.parse(csvText, {
+        skipEmptyLines: true,
+        header: false,
+        delimiter: ',',
+      });
+      
+      console.log('Papa Parse results:', results);
+      console.log('First row (headers):', results.data[0]);
+      console.log('Second row:', results.data[1]);
+
+      let csvRows = results.data as string[][];
+      
+      // Check if first row has only 1 column, not if csvRows has 1 row
+      if (csvRows.length > 0 && csvRows[0].length === 1) {
+        console.log('Forcing header split...');
+        // Get the first string from first row
+        const headerString = csvRows[0][0]; // Get the first element (string)
+        csvRows = [headerString.split(',').map(h => h.trim())];
+      }
+      
+      // Alternative: If CSV doesn't have commas, try manual parsing
+      if (csvRows.length > 0 && csvRows[0].length === 1) {
+        console.log('CSV appears to be concatenated without commas');
+        
+        // Define expected headers for your CSV structure
+        const expectedHeaders = [
+          'Sno', 'Company Name', 'First Name', 'Last Name', 'Email Address', 
+          'Job Title', 'Address Line', 'City', 'State Or Province', 'Country', 
+          'Postal Code', 'yy', 'Website URL', 'Contact Linkedin Profile Link', 
+          'Total Employees', 'Revenue ($M)', 'Industry Type', 'Technology Used'
+        ];
+        
+        // For now, show the concatenated data with expected headers
+        csvRows[0] = expectedHeaders;
+        
+        // Show alert about format issue
+        alert('CSV file appears to be missing comma delimiters. Headers have been manually set.');
+      }
+      
+      console.log('Final header row:', csvRows[0]);
+      console.log('Total rows:', csvRows.length);
+      
+      setPreviewData(csvRows);
+      setIsPreviewOpen(true);
+    } catch (error) {
+      console.error('Error fetching CSV:', error);
+      alert('Failed to load CSV preview');
+    } finally {
+      setIsLoadingPreview(false);
     }
-    
-    // Alternative: If CSV doesn't have commas, try manual parsing
-    if (csvRows.length > 0 && csvRows[0].length === 1) {
-      console.log('CSV appears to be concatenated without commas');
-      
-      // Define expected headers for your CSV structure
-      const expectedHeaders = [
-        'Sno', 'Company Name', 'First Name', 'Last Name', 'Email Address', 
-        'Job Title', 'Address Line', 'City', 'State Or Province', 'Country', 
-        'Postal Code', 'yy', 'Website URL', 'Contact Linkedin Profile Link', 
-        'Total Employees', 'Revenue ($M)', 'Industry Type', 'Technology Used'
-      ];
-      
-      // For now, show the concatenated data with expected headers
-      csvRows[0] = expectedHeaders;
-      
-      // Show alert about format issue
-      alert('CSV file appears to be missing comma delimiters. Headers have been manually set.');
-    }
-    
-    console.log('Final header row:', csvRows[0]);
-    console.log('Total rows:', csvRows.length);
-    
-    setPreviewData(csvRows);
-    setIsPreviewOpen(true);
-  } catch (error) {
-    console.error('Error fetching CSV:', error);
-    alert('Failed to load CSV preview');
-  } finally {
-    setIsLoadingPreview(false);
-  }
-};
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -221,33 +221,34 @@ const previewCSVData = async (list: EmailList) => {
   };
 
   // ===== Create new list =====
-const createNewList = async () => {
-  if (!newListName) return alert('List name is required');
-
-  const { data, error } = await supabase.from('lists').insert([{
-    name: newListName,
-    description: newListDescription || '',
-    file_path: '',
-    uploaded_at: new Date().toISOString(),
-    user_id: '12345678-1234-5678-9abc-123456789012',
-    contacts: 0 // Initialize with 0 contacts
-  }]).select();
-
-  if (error) {
-    console.error(error);
-    alert('Failed to create list: ' + error.message);
-  } else {
-    setIsDialogOpen(false);
-    setNewListName('');
-    setNewListDescription('');
-    if (data) {
-      setLists(prev => [...prev, data[0] as EmailList]);
-      alert('List created successfully!');
+  const createNewList = async () => {
+    if (!newListName) {
+      alert('List name is required');
+      return;
     }
-  }
-};
 
+    const { data, error } = await supabase.from('lists').insert([{
+      name: newListName,
+      description: newListDescription || '',
+      file_path: '',
+      uploaded_at: new Date().toISOString(),
+      user_id: '12345678-1234-5678-9abc-123456789012',
+      contacts: 0 // Initialize with 0 contacts
+    }]).select();
 
+    if (error) {
+      console.error(error);
+      alert('Failed to create list: ' + error.message);
+    } else {
+      setIsDialogOpen(false);
+      setNewListName('');
+      setNewListDescription('');
+      if (data) {
+        setLists(prev => [...prev, data[0] as EmailList]);
+        alert('List created successfully!');
+      }
+    }
+  };
 
   // ===== Drag & Drop =====
   const onDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
@@ -258,116 +259,113 @@ const createNewList = async () => {
     handleFileSelection(files);
   }, []);
 
-const handleFileSelection = async (files: File[], selectedListId?: number) => {
-  for (const file of files) {
-    const filePath = `${Date.now()}-${file.name}`;
-    
-    try {
-      // Read file content to count rows
-      const fileText = await file.text();
-      console.log('File content preview:', fileText.substring(0, 200));
+  const handleFileSelection = async (files: File[], selectedListId?: number) => {
+    for (const file of files) {
+      const filePath = `${Date.now()}-${file.name}`;
       
-      const lines = fileText.split('\n');
-      
-      // Better contact counting - handle different CSV formats
-      let contactCount = 0;
-      const firstLine = lines[0] || '';
-      
-      if (firstLine.includes(',')) {
-        // Proper CSV with commas
-        contactCount = lines.slice(1).filter(line => line.trim() !== '').length;
-      } else {
-        // CSV without proper delimiters - count lines
-        contactCount = lines.slice(1).filter(line => line.trim() !== '').length;
-        console.log('Warning: CSV appears to be missing comma delimiters');
-      }
-      
-      console.log(`Counted ${contactCount} contacts`);
-      
-      // Upload file to storage
-      const { error: storageError } = await supabase.storage
-        .from("csv-uploads")
-        .upload(filePath, file);
-      
-      if (storageError) { 
-        console.error('Storage error:', storageError);
-        alert(`Failed to upload ${file.name}: ${storageError.message}`);
-        continue; 
-      }
-
-      if (selectedListId) {
-        // Update existing list
-        const { error: updateError } = await supabase
-          .from("lists")
-          .update({ 
-            file_path: filePath,
-            contacts: contactCount 
-          })
-          .eq('id', selectedListId);
-          
-        if (updateError) {
-          console.error('Update error:', updateError);
-          alert(`Failed to update list: ${updateError.message}`);
-          continue;
+      try {
+        // Read file content to count rows
+        const fileText = await file.text();
+        console.log('File content preview:', fileText.substring(0, 200));
+        
+        const lines = fileText.split('\n');
+        
+        // Better contact counting - handle different CSV formats
+        let contactCount = 0;
+        const firstLine = lines[0] || '';
+        
+        if (firstLine.includes(',')) {
+          // Proper CSV with commas
+          contactCount = lines.slice(1).filter(line => line.trim() !== '').length;
+        } else {
+          // CSV without proper delimiters - count lines
+          contactCount = lines.slice(1).filter(line => line.trim() !== '').length;
+          console.log('Warning: CSV appears to be missing comma delimiters');
         }
         
-        fetchLists();
-        alert(`File uploaded successfully! Found ${contactCount} contacts.`);
-      } else {
-        // Create new list
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          alert('You must be logged in to create a list');
-          continue;
-        }
-
-        const { data, error: dbError } = await supabase.from("lists").insert([{
-          name: file.name.split(".")[0],
-          description: "Uploaded CSV file",
-          file_path: filePath,
-          uploaded_at: new Date().toISOString(),
-          user_id: user.id,
-          contacts: contactCount
-        }]).select();
-
-        if (dbError) { 
-          console.error('Database error:', dbError);
-          alert(`Failed to create list: ${dbError.message}`);
+        console.log(`Counted ${contactCount} contacts`);
+        
+        // Upload file to storage
+        const { error: storageError } = await supabase.storage
+          .from("csv-uploads")
+          .upload(filePath, file);
+        
+        if (storageError) { 
+          console.error('Storage error:', storageError);
+          alert(`Failed to upload ${file.name}: ${storageError.message}`);
           continue; 
         }
 
-        if (data && data.length) {
-          setLists(prev => [...prev, data[0]]);
-          alert(`List created successfully! Found ${contactCount} contacts.`);
+        if (selectedListId) {
+          // Update existing list
+          const { error: updateError } = await supabase
+            .from("lists")
+            .update({ 
+              file_path: filePath,
+              contacts: contactCount 
+            })
+            .eq('id', selectedListId);
+            
+          if (updateError) {
+            console.error('Update error:', updateError);
+            alert(`Failed to update list: ${updateError.message}`);
+            continue;
+          }
+          
+          fetchLists();
+          alert(`File uploaded successfully! Found ${contactCount} contacts.`);
+        } else {
+          // Create new list
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) {
+            alert('You must be logged in to create a list');
+            continue;
+          }
+
+          const { data, error: dbError } = await supabase.from("lists").insert([{
+            name: file.name.split(".")[0],
+            description: "Uploaded CSV file",
+            file_path: filePath,
+            uploaded_at: new Date().toISOString(),
+            user_id: user.id,
+            contacts: contactCount
+          }]).select();
+
+          if (dbError) { 
+            console.error('Database error:', dbError);
+            alert(`Failed to create list: ${dbError.message}`);
+            continue; 
+          }
+
+          if (data && data.length) {
+            setLists(prev => [...prev, data[0]]);
+            alert(`List created successfully! Found ${contactCount} contacts.`);
+          }
         }
+      } catch (error) {
+        console.error(`Error processing file ${file.name}:`, error);
+        alert(`Failed to process ${file.name}`);
       }
-    } catch (error) {
-      console.error(`Error processing file ${file.name}:`, error);
-      alert(`Failed to process ${file.name}`);
     }
-  }
-};
+  };
 
-
-
-const filteredLists = lists.filter(list => {
-  // Filter by file status if needed
-  let matchesStatus = true;
-  if (filterStatus !== 'all') {
-    if (filterStatus === 'with-file') {
-      matchesStatus = !!list.file_path;
-    } else if (filterStatus === 'no-file') {
-      matchesStatus = !list.file_path;
+  const filteredLists = lists.filter(list => {
+    // Filter by file status if needed
+    let matchesStatus = true;
+    if (filterStatus !== 'all') {
+      if (filterStatus === 'with-file') {
+        matchesStatus = !!list.file_path;
+      } else if (filterStatus === 'no-file') {
+        matchesStatus = !list.file_path;
+      }
     }
-  }
-  
-  const matchesSearch = list.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        list.description.toLowerCase().includes(searchQuery.toLowerCase());
-  return matchesStatus && matchesSearch;
-});
+    
+    const matchesSearch = list.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          list.description.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesStatus && matchesSearch;
+  });
 
-
-
+  // Remove unused functions and variables
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'active': return 'bg-green-100 text-green-800 hover:bg-green-100';
@@ -397,6 +395,7 @@ const filteredLists = lists.filter(list => {
       default: return <Info className="w-4 h-4 text-gray-500" />;
     }
   };
+
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar />
@@ -1028,151 +1027,151 @@ const filteredLists = lists.filter(list => {
               </Card>
             )}
           </motion.div>
-{/* CSV Preview Dialog - UNIVERSAL VERSION */}
-<Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
-  <DialogContent className="sm:max-w-[95vw] max-h-[90vh]">
-    <DialogHeader>
-      <DialogTitle>Complete CSV File - {previewListName}</DialogTitle>
-      <DialogDescription>
-        Showing all{" "}
-        {previewData.length > 0 ? previewData.length - 1 : 0} rows from the
-        uploaded CSV file
-      </DialogDescription>
-    </DialogHeader>
 
-    <div className="overflow-auto max-h-[70vh] border rounded">
-      {isLoadingPreview ? (
-        <div className="flex items-center justify-center py-8">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-          <span className="ml-2">Loading complete file...</span>
-        </div>
-      ) : previewData.length > 0 ? (
-        <div className="overflow-x-auto">
-          <table className="min-w-full table-auto border-collapse border border-gray-300">
-            <thead>
-              <tr className="bg-blue-50">
-                {Array.isArray(previewData[0])
-                  ? // case 1: CSV parsed as array of arrays
-                    previewData[0].map((header, index) => (
-                      <th
-                        key={`header-${index}`}
-                        className="border border-gray-300 px-4 py-2 text-left font-semibold text-gray-900 text-sm"
-                      >
-                        {header}
-                      </th>
-                    ))
-                  : // case 2: CSV parsed as array of objects
-                    Object.keys(previewData[0] || {}).map((header, index) => (
-                      <th
-                        key={`header-${index}`}
-                        className="border border-gray-300 px-4 py-2 text-left font-semibold text-gray-900 text-sm"
-                      >
-                        {header}
-                      </th>
-                    ))}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.isArray(previewData[0])
-                ? // array-of-arrays → skip first row (headers)
-                  previewData.slice(1).map((row, rowIndex) => (
-                    <tr
-                      key={`row-${rowIndex}`}
-                      className="hover:bg-gray-50"
-                    >
-                      {row.map((cell, cellIndex) => (
-                        <td
-                          key={`cell-${rowIndex}-${cellIndex}`}
-                          className="border border-gray-300 px-4 py-2 text-sm text-gray-700"
-                        >
-                          {cell || "-"}
-                        </td>
-                      ))}
-                    </tr>
-                  ))
-                : // array-of-objects
-                  previewData.map((row, rowIndex) => (
-                    <tr
-                      key={`row-${rowIndex}`}
-                      className="hover:bg-gray-50"
-                    >
-                      {Object.values(row).map((cell, cellIndex) => (
-                        <td
-                          key={`cell-${rowIndex}-${cellIndex}`}
-                          className="border border-gray-300 px-4 py-2 text-sm text-gray-700"
-                        >
-                          {cell || "-"}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="flex flex-col items-center justify-center py-12">
-          <div className="text-gray-400 mb-4">
-            <FileText className="w-16 h-16" />
-          </div>
-          <h3 className="text-lg font-medium text-gray-900 mb-2">
-            No File Available
-          </h3>
-          <p className="text-gray-500 text-center max-w-sm">
-            This list doesn't have an uploaded CSV file to preview. Upload a
-            file first to see the data.
-          </p>
-        </div>
-      )}
-    </div>
+          {/* CSV Preview Dialog - UNIVERSAL VERSION */}
+          <Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
+            <DialogContent className="sm:max-w-[95vw] max-h-[90vh]">
+              <DialogHeader>
+                <DialogTitle>Complete CSV File - {previewListName}</DialogTitle>
+                <DialogDescription>
+                  Showing all{" "}
+                  {previewData.length > 0 ? previewData.length - 1 : 0} rows from the
+                  uploaded CSV file
+                </DialogDescription>
+              </DialogHeader>
 
-    <DialogFooter className="flex justify-between items-center">
-      <div className="text-sm text-gray-500">
-        {previewData.length > 0 && (
-          <span>
-            Showing{" "}
-            {Array.isArray(previewData[0])
-              ? previewData.length - 1
-              : previewData.length}{" "}
-            rows ×{" "}
-            {Array.isArray(previewData[0])
-              ? previewData[0]?.length || 0
-              : Object.keys(previewData[0] || {}).length}
-            {" "}columns
-          </span>
-        )}
-      </div>
-      <div className="flex gap-2">
-        <Button variant="outline" onClick={() => setIsPreviewOpen(false)}>
-          Close
-        </Button>
-        {previewData.length > 0 && (
-          <Button
-            onClick={() => {
-              const list = lists.find((l) => l.name === previewListName);
-              if (list?.file_path) {
-                const { data } = supabase.storage
-                  .from("csv-uploads")
-                  .getPublicUrl(list.file_path);
-                if (data?.publicUrl) {
-                  window.open(data.publicUrl);
-                }
-              }
-            }}
-            className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white"
-          >
-            <Download className="w-4 h-4 mr-2" />
-            Download Full File
-          </Button>
-        )}
-      </div>
-    </DialogFooter>
-  </DialogContent>
-</Dialog>
+              <div className="overflow-auto max-h-[70vh] border rounded">
+                {isLoadingPreview ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                    <span className="ml-2">Loading complete file...</span>
+                  </div>
+                ) : previewData.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full table-auto border-collapse border border-gray-300">
+                      <thead>
+                        <tr className="bg-blue-50">
+                          {Array.isArray(previewData[0])
+                            ? // case 1: CSV parsed as array of arrays
+                              previewData[0].map((header, index) => (
+                                <th
+                                  key={`header-${index}`}
+                                  className="border border-gray-300 px-4 py-2 text-left font-semibold text-gray-900 text-sm"
+                                >
+                                  {header}
+                                </th>
+                              ))
+                            : // case 2: CSV parsed as array of objects
+                              Object.keys(previewData[0] || {}).map((header, index) => (
+                                <th
+                                  key={`header-${index}`}
+                                  className="border border-gray-300 px-4 py-2 text-left font-semibold text-gray-900 text-sm"
+                                >
+                                  {header}
+                                </th>
+                              ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Array.isArray(previewData[0])
+                          ? // array-of-arrays → skip first row (headers)
+                            previewData.slice(1).map((row, rowIndex) => (
+                              <tr
+                                key={`row-${rowIndex}`}
+                                className="hover:bg-gray-50"
+                              >
+                                {row.map((cell, cellIndex) => (
+                                  <td
+                                    key={`cell-${rowIndex}-${cellIndex}`}
+                                    className="border border-gray-300 px-4 py-2 text-sm text-gray-700"
+                                  >
+                                    {cell || "-"}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))
+                          : // array-of-objects
+                            previewData.map((row, rowIndex) => (
+                              <tr
+                                key={`row-${rowIndex}`}
+                                className="hover:bg-gray-50"
+                              >
+                                {Object.values(row).map((cell, cellIndex) => (
+                                  <td
+                                    key={`cell-${rowIndex}-${cellIndex}`}
+                                    className="border border-gray-300 px-4 py-2 text-sm text-gray-700"
+                                  >
+                                    {cell || "-"}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-12">
+                    <div className="text-gray-400 mb-4">
+                      <FileText className="w-16 h-16" />
+                    </div>
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">
+                      No File Available
+                    </h3>
+                    <p className="text-gray-500 text-center max-w-sm">
+                      This list doesn&apos;t have an uploaded CSV file to preview. Upload a
+                      file first to see the data.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <DialogFooter className="flex justify-between items-center">
+                <div className="text-sm text-gray-500">
+                  {previewData.length > 0 && (
+                    <span>
+                      Showing{" "}
+                      {Array.isArray(previewData[0])
+                        ? previewData.length - 1
+                        : previewData.length}{" "}
+                      rows ×{" "}
+                      {Array.isArray(previewData[0])
+                        ? previewData[0]?.length || 0
+                        : Object.keys(previewData[0] || {}).length}
+                      {" "}columns
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={() => setIsPreviewOpen(false)}>
+                    Close
+                  </Button>
+                  {previewData.length > 0 && (
+                    <Button
+                      onClick={() => {
+                        const list = lists.find((l) => l.name === previewListName);
+                        if (list?.file_path) {
+                          const { data } = supabase.storage
+                            .from("csv-uploads")
+                            .getPublicUrl(list.file_path);
+                          if (data?.publicUrl) {
+                            window.open(data.publicUrl);
+                          }
+                        }
+                      }}
+                      className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download Full File
+                    </Button>
+                  )}
+                </div>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
         </div>
       </main>
     </div>
     </div>
-
   );
 }
