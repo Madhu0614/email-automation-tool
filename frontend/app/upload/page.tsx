@@ -13,9 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import supabase from '@/lib/supabaseClient';
 import { Switch } from '@/components/ui/switch';
-import Papa from 'papaparse';
 import {
   Upload,
   FileText,
@@ -61,342 +59,614 @@ import {
   Info,
   Sparkles,
   Wand2,
+  Loader2,
 } from 'lucide-react';
-
-interface UploadedFile {
-  id: number;
-  name: string;
-  originalName: string;
-  size: string;
-  type: string;
-  uploadedAt: string;
-  progress: number;
-  status: 'uploading' | 'processing' | 'completed' | 'error';
-  preview?: string[];
-  
-}
+import supabase from '@/lib/supabaseClient';
 
 interface EmailList {
   id: number;
   name: string;
   description: string;
-  count: number;
-  uploaded_at: string;
-  file_path?: string;
-  contacts: number;
+  count?: number;
+  uploaded: string;
+  status: 'active' | 'processing' | 'error' | 'archived';
+  tags: string[];
+  source: string;
+  lastUsed?: string;
+  openRate?: number;
+  clickRate?: number;
+  bounceRate?: number;
+  quality?: 'excellent' | 'good' | 'fair' | 'poor';
+  segments?: number;
+  duplicates?: number;
+  invalid?: number;
+  file_name?: string;
+  created_at: string;
+  auto_clean: boolean;
+  duplicate_check: boolean;
+  gdpr_compliance: boolean;
 }
 
+interface EmailContact {
+  id: number;
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  full_name?: string;
+  company?: string;
+  phone?: string;
+  location?: string;
+  job_title?: string;
+  status: string;
+  created_at: string;
+}
+
+const templates = [
+  {
+    id: 1,
+    name: 'Standard CSV',
+    description: 'Email, Name, Company columns',
+    columns: ['email', 'name', 'company'],
+    icon: FileText,
+    color: 'from-blue-500 to-blue-600',
+  },
+  {
+    id: 2,
+    name: 'Extended Contact',
+    description: 'Full contact information',
+    columns: ['email', 'first_name', 'last_name', 'company', 'phone', 'location'],
+    icon: User,
+    color: 'from-green-500 to-green-600',
+  },
+  {
+    id: 3,
+    name: 'E-commerce',
+    description: 'Customer purchase data',
+    columns: ['email', 'name', 'purchase_date', 'amount', 'category'],
+    icon: Building,
+    color: 'from-purple-500 to-purple-600',
+  },
+  {
+    id: 4,
+    name: 'Event Attendees',
+    description: 'Event registration data',
+    columns: ['email', 'name', 'company', 'event', 'registration_date'],
+    icon: Calendar,
+    color: 'from-orange-500 to-orange-600',
+  },
+];
+
 export default function UploadPage() {
-  const [lists, setLists] = useState<EmailList[]>([]);
-  const [selectedFiles, setSelectedFiles] = useState<UploadedFile[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
+  // Email Lists from Database
+  const [emailLists, setEmailLists] = useState<EmailList[]>([]);
+  const [isLoadingLists, setIsLoadingLists] = useState(true);
+  
+  // UI States
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [filterStatus, setFilterStatus] = useState('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<number | null>(null);
-  
-  // Updated preview state for CSV data
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
-  const [previewData, setPreviewData] = useState<string[][]>([]); // Changed to 2D array
-  const [previewListName, setPreviewListName] = useState(''); // Add this
-  const [isLoadingPreview, setIsLoadingPreview] = useState(false); // Add this
-  
-  const [selectedList, setSelectedList] = useState<EmailList | null>(null);
+  const [previewData, setPreviewData] = useState<EmailContact[]>([]);
+  const [selectedListId, setSelectedListId] = useState<number | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [uploadStats, setUploadStats] = useState({ totalLists: 0, totalContacts: 0, thisMonth: 0, avgQuality: 0 });
-
-  // New list state
-  const [newListName, setNewListName] = useState('');
-  const [newListSource, setNewListSource] = useState('');
-  const [newListDescription, setNewListDescription] = useState('');
-  const [newListTags, setNewListTags] = useState('');
+  const [isContactsDialogOpen, setIsContactsDialogOpen] = useState(false);
+  
+  // Stats
+  const [uploadStats, setUploadStats] = useState({
+    totalLists: 0,
+    totalContacts: 0,
+    thisMonth: 0,
+    avgQuality: 0,
+  });
+  
+  // Form States
+  const [listName, setListName] = useState('');
+  const [listSource, setListSource] = useState('');
+  const [description, setDescription] = useState('');
+  const [tags, setTags] = useState('');
   const [autoClean, setAutoClean] = useState(false);
   const [duplicateCheck, setDuplicateCheck] = useState(false);
   const [gdprCompliance, setGdprCompliance] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
 
-  // For file uploads
-  const [selectedListForUpload, setSelectedListForUpload] = useState<number | null>(null);
+  // CSV Processing function
+  const parseCSV = (csvText: string): any[] => {
+    const lines = csvText.split('\n').filter(line => line.trim());
+    if (lines.length === 0) return [];
 
+    const headers = lines[0].split(',').map(header => header.trim().replace(/"/g, ''));
+    const rows = [];
 
-  const templates = [
-    { id: 1, name: 'Standard CSV', description: 'Email, Name, Company columns', columns: ['email', 'name', 'company'], icon: FileText, color: 'from-blue-500 to-blue-600' },
-    { id: 2, name: 'Extended Contact', description: 'Full contact information', columns: ['email','first_name','last_name','company','phone','location'], icon: User, color: 'from-green-500 to-green-600' },
-    { id: 3, name: 'E-commerce', description: 'Customer purchase data', columns: ['email','name','purchase_date','amount','category'], icon: Building, color: 'from-purple-500 to-purple-600' },
-    { id: 4, name: 'Event Attendees', description: 'Event registration data', columns: ['email','name','company','event','registration_date'], icon: Calendar, color: 'from-orange-500 to-orange-600' },
-  ];
+    for (let i = 1; i < lines.length; i++) {
+      const values = lines[i].split(',').map(value => value.trim().replace(/"/g, ''));
+      if (values.length === headers.length) {
+        const row: any = {};
+        headers.forEach((header, index) => {
+          row[header.toLowerCase()] = values[index];
+        });
+        rows.push(row);
+      }
+    }
 
-  // Add the preview function here
-// Add the preview function here
-const previewCSVData = async (list: EmailList) => {
-  if (!list.file_path) { // Fixed: removed backslashes
-    alert('No file uploaded for this list');
-    return;
-  }
+    return rows;
+  };
 
-  setIsLoadingPreview(true);
-  setPreviewListName(list.name);
-  
-  try {
-    const { data: fileData } = supabase.storage
-      .from('csv-uploads')
-      .getPublicUrl(list.file_path); // Fixed: removed backslashes
+  // Process uploaded file and extract contacts
+  const processUploadedFile = async (file: File): Promise<any[]> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      
+      reader.onload = (e) => {
+        try {
+          const text = e.target?.result as string;
+          const parsedData = parseCSV(text);
+          resolve(parsedData);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsText(file);
+    });
+  };
 
-    if (!fileData?.publicUrl) {
-      alert('Unable to get file URL');
+  // Load email lists from database
+  const fetchEmailLists = async () => {
+    try {
+      setIsLoadingLists(true);
+      const { data, error } = await supabase
+        .from('email_lists')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching email lists:', error);
+        return;
+      }
+
+      const formattedLists: EmailList[] = data.map(item => ({
+        id: item.id,
+        name: item.name,
+        description: item.description || '',
+        count: item.count || 0,
+        uploaded: formatTimeAgo(item.created_at),
+        status: item.status || 'active',
+        tags: item.tags || [],
+        source: item.source || 'Unknown',
+        lastUsed: item.last_used ? formatTimeAgo(item.last_used) : 'Never',
+        openRate: item.open_rate || 0,
+        clickRate: item.click_rate || 0,
+        bounceRate: item.bounce_rate || 0,
+        quality: item.quality || 'fair',
+        segments: item.segments || 0,
+        duplicates: item.duplicates || 0,
+        invalid: item.invalid || 0,
+        file_name: item.file_name,
+        created_at: item.created_at,
+        auto_clean: item.auto_clean || false,
+        duplicate_check: item.duplicate_check || false,
+        gdpr_compliance: item.gdpr_compliance || false,
+      }));
+
+      setEmailLists(formattedLists);
+      calculateStats(formattedLists);
+    } catch (err) {
+      console.error('Error in fetchEmailLists:', err);
+    } finally {
+      setIsLoadingLists(false);
+    }
+  };
+
+  // Fetch contacts for a specific list
+  const fetchEmailContacts = async (listId: number) => {
+    try {
+      const { data, error } = await supabase
+        .from('email_contacts')
+        .select('*')
+        .eq('email_list_id', listId)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching contacts:', error);
+        return [];
+      }
+
+      return data as EmailContact[];
+    } catch (err) {
+      console.error('Error in fetchEmailContacts:', err);
+      return [];
+    }
+  };
+
+  // View contacts for a list
+  const handleViewContacts = async (listId: number) => {
+    setSelectedListId(listId);
+    const contacts = await fetchEmailContacts(listId);
+    setPreviewData(contacts);
+    setIsContactsDialogOpen(true);
+  };
+
+  // Calculate statistics
+  const calculateStats = (lists: EmailList[]) => {
+    const totalLists = lists.length;
+    const totalContacts = lists.reduce((sum, list) => sum + (list.count || 0), 0);
+    
+    const currentMonth = new Date().getMonth();
+    const currentYear = new Date().getFullYear();
+    const thisMonth = lists.filter(list => {
+      const listDate = new Date(list.created_at);
+      return listDate.getMonth() === currentMonth && listDate.getFullYear() === currentYear;
+    }).reduce((sum, list) => sum + (list.count || 0), 0);
+
+    const qualityScores = lists.map(list => {
+      switch (list.quality) {
+        case 'excellent': return 100;
+        case 'good': return 80;
+        case 'fair': return 60;
+        case 'poor': return 40;
+        default: return 60;
+      }
+    });
+    const avgQuality = qualityScores.length > 0 
+      ? Math.round(qualityScores.reduce((sum, score) => sum + score, 0) / qualityScores.length)
+      : 0;
+
+    setUploadStats({
+      totalLists,
+      totalContacts,
+      thisMonth,
+      avgQuality,
+    });
+  };
+
+  // Format time ago
+  const formatTimeAgo = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+    
+    if (diffInMinutes < 60) {
+      return `${diffInMinutes} minutes ago`;
+    } else if (diffInMinutes < 1440) {
+      const hours = Math.floor(diffInMinutes / 60);
+      return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    } else {
+      const days = Math.floor(diffInMinutes / 1440);
+      return `${days} day${days > 1 ? 's' : ''} ago`;
+    }
+  };
+
+  // Load data on component mount
+  useEffect(() => {
+    fetchEmailLists();
+  }, []);
+
+  // File validation
+  const validateFile = (file: File) => {
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    const allowedTypes = [
+      'text/csv',
+      'application/vnd.ms-excel',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/csv'
+    ];
+    const allowedExtensions = ['csv', 'xls', 'xlsx'];
+
+    if (file.size > maxSize) {
+      throw new Error('File size must be less than 10MB');
+    }
+
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    if (!extension || !allowedExtensions.includes(extension)) {
+      throw new Error('Please upload CSV or Excel files only');
+    }
+
+    return true;
+  };
+
+  // Handle file upload in form
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      try {
+        validateFile(file);
+        setUploadedFile(file);
+      } catch (error) {
+        alert(error instanceof Error ? error.message : 'Invalid file');
+        event.target.value = '';
+      }
+    }
+  };
+
+  // Create email list with contact processing
+  const handleCreateList = async () => {
+    if (!listName.trim()) {
+      alert('Please enter a list name');
       return;
     }
 
-    const response = await fetch(fileData.publicUrl);
-    const csvText = await response.text();
-    
-    console.log('Raw CSV (first 300 chars):', csvText.substring(0, 300));
-    
-    // Use Papa Parse with proper configuration
-    const results = Papa.parse(csvText, {
-      skipEmptyLines: true,
-      header: false,
-      delimiter: ',',
-    });
-    
-    console.log('Papa Parse results:', results);
-    console.log('First row (headers):', results.data[0]);
-    console.log('Second row:', results.data[1]); // Fixed: changed from [2] to [1]
-
-    let csvRows = results.data as string[][];
-    
-    // Fixed: Check if first row has only 1 column, not if csvRows has 1 row
-    if (csvRows.length > 0 && csvRows[0].length === 1) {
-      console.log('Forcing header split...');
-      // Fixed: Get the first string from first row
-      const headerString = csvRows[0][0]; // Get the first element (string)
-      csvRows = [headerString.split(',').map(h => h.trim())];
-    }
-    
-    // Alternative: If CSV doesn't have commas, try manual parsing
-    if (csvRows.length > 0 && csvRows[0].length === 1) {
-      console.log('CSV appears to be concatenated without commas');
-      
-      // Define expected headers for your CSV structure
-      const expectedHeaders = [
-        'Sno', 'Company Name', 'First Name', 'Last Name', 'Email Address', 
-        'Job Title', 'Address Line', 'City', 'State Or Province', 'Country', 
-        'Postal Code', 'yy', 'Website URL', 'Contact Linkedin Profile Link', 
-        'Total Employees', 'Revenue ($M)', 'Industry Type', 'Technology Used'
-      ];
-      
-      // For now, show the concatenated data with expected headers
-      csvRows[0] = expectedHeaders;
-      
-      // Show alert about format issue
-      alert('CSV file appears to be missing comma delimiters. Headers have been manually set.');
-    }
-    
-    console.log('Final header row:', csvRows[0]);
-    console.log('Total rows:', csvRows.length);
-    
-    setPreviewData(csvRows);
-    setIsPreviewOpen(true);
-  } catch (error) {
-    console.error('Error fetching CSV:', error);
-    alert('Failed to load CSV preview');
-  } finally {
-    setIsLoadingPreview(false);
-  }
-};
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    fetchLists();
-  }, []);
-
-  // ===== Fetch lists from Supabase =====
-  const fetchLists = async () => {
-    const { data, error } = await supabase.from('lists').select('*');
-    if (error) {
-      console.error(error);
-    } else {
-      setLists(data || []);
-    }
-  };
-
-  // ===== Create new list =====
-const createNewList = async () => {
-  if (!newListName) return alert('List name is required');
-
-  const { data, error } = await supabase.from('lists').insert([{
-    name: newListName,
-    description: newListDescription || '',
-    file_path: '',
-    uploaded_at: new Date().toISOString(),
-    user_id: '12345678-1234-5678-9abc-123456789012',
-    contacts: 0 // Initialize with 0 contacts
-  }]).select();
-
-  if (error) {
-    console.error(error);
-    alert('Failed to create list: ' + error.message);
-  } else {
-    setIsDialogOpen(false);
-    setNewListName('');
-    setNewListDescription('');
-    if (data) {
-      setLists(prev => [...prev, data[0] as EmailList]);
-      alert('List created successfully!');
-    }
-  }
-};
-
-
-
-  // ===== Drag & Drop =====
-  const onDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
-  const onDragLeave = useCallback((e: React.DragEvent) => { e.preventDefault(); }, []);
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    const files = Array.from(e.dataTransfer.files);
-    handleFileSelection(files);
-  }, []);
-
-const handleFileSelection = async (files: File[], selectedListId?: number) => {
-  for (const file of files) {
-    const filePath = `${Date.now()}-${file.name}`;
+    setIsLoading(true);
     
     try {
-      // Read file content to count rows
-      const fileText = await file.text();
-      console.log('File content preview:', fileText.substring(0, 200));
+      const tagsArray = tags.split(',').map(tag => tag.trim()).filter(Boolean);
       
-      const lines = fileText.split('\n');
-      
-      // Better contact counting - handle different CSV formats
+      // Create the email list first
+      const insertData = {
+        name: listName,
+        source: listSource || 'manual',
+        description: description,
+        tags: tagsArray,
+        auto_clean: autoClean,
+        duplicate_check: duplicateCheck,
+        gdpr_compliance: gdprCompliance,
+        file_name: uploadedFile?.name || null,
+        file_size: uploadedFile?.size || null,
+        file_type: uploadedFile?.type || null,
+        status: 'processing',
+        created_at: new Date().toISOString(),
+      };
+
+      const { data: listData, error: listError } = await supabase
+        .from('email_lists')
+        .insert([insertData])
+        .select()
+        .single();
+
+      if (listError) {
+        throw new Error(`Database error: ${listError.message}`);
+      }
+
       let contactCount = 0;
-      const firstLine = lines[0] || '';
-      
-      if (firstLine.includes(',')) {
-        // Proper CSV with commas
-        contactCount = lines.slice(1).filter(line => line.trim() !== '').length;
-      } else {
-        // CSV without proper delimiters - count lines
-        contactCount = lines.slice(1).filter(line => line.trim() !== '').length;
-        console.log('Warning: CSV appears to be missing comma delimiters');
-      }
-      
-      console.log(`Counted ${contactCount} contacts`);
-      
-      // Upload file to storage
-      const { error: storageError } = await supabase.storage
-        .from("csv-uploads")
-        .upload(filePath, file);
-      
-      if (storageError) { 
-        console.error('Storage error:', storageError);
-        alert(`Failed to upload ${file.name}: ${storageError.message}`);
-        continue; 
-      }
+      let duplicateCount = 0;
+      let invalidCount = 0;
 
-      if (selectedListId) {
-        // Update existing list
-        const { error: updateError } = await supabase
-          .from("lists")
-          .update({ 
-            file_path: filePath,
-            contacts: contactCount 
-          })
-          .eq('id', selectedListId);
-          
-        if (updateError) {
-          console.error('Update error:', updateError);
-          alert(`Failed to update list: ${updateError.message}`);
-          continue;
-        }
-        
-        fetchLists();
-        alert(`File uploaded successfully! Found ${contactCount} contacts.`);
-      } else {
-        // Create new list
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          alert('You must be logged in to create a list');
-          continue;
-        }
+      // Process uploaded file if exists
+      if (uploadedFile) {
+        try {
+          const csvData = await processUploadedFile(uploadedFile);
+          const validContacts = [];
 
-        const { data, error: dbError } = await supabase.from("lists").insert([{
-          name: file.name.split(".")[0],
-          description: "Uploaded CSV file",
-          file_path: filePath,
-          uploaded_at: new Date().toISOString(),
-          user_id: user.id,
-          contacts: contactCount
-        }]).select();
+          for (const row of csvData) {
+            // Basic email validation
+            const email = row.email || row.Email || row.EMAIL;
+            if (!email || !email.includes('@')) {
+              invalidCount++;
+              continue;
+            }
 
-        if (dbError) { 
-          console.error('Database error:', dbError);
-          alert(`Failed to create list: ${dbError.message}`);
-          continue; 
-        }
+            // Check for duplicates if enabled
+            if (duplicateCheck) {
+              const { data: existingContact } = await supabase
+                .from('email_contacts')
+                .select('id')
+                .eq('email_list_id', listData.id)
+                .eq('email', email)
+                .single();
 
-        if (data && data.length) {
-          setLists(prev => [...prev, data[0]]);
-          alert(`List created successfully! Found ${contactCount} contacts.`);
+              if (existingContact) {
+                duplicateCount++;
+                continue;
+              }
+            }
+
+            // Prepare contact data
+            const contactData = {
+              email_list_id: listData.id,
+              email: email.toLowerCase(),
+              first_name: row.first_name || row.firstName || row['First Name'] || null,
+              last_name: row.last_name || row.lastName || row['Last Name'] || null,
+              full_name: row.name || row.Name || row.full_name || row.fullName || null,
+              company: row.company || row.Company || null,
+              phone: row.phone || row.Phone || null,
+              location: row.location || row.Location || row.city || row.City || null,
+              job_title: row.job_title || row.jobTitle || row['Job Title'] || null,
+              status: 'active',
+              opt_in: true,
+              created_at: new Date().toISOString(),
+            };
+
+            validContacts.push(contactData);
+          }
+
+          // Insert all contacts at once
+          if (validContacts.length > 0) {
+            const { error: contactsError } = await supabase
+              .from('email_contacts')
+              .insert(validContacts);
+
+            if (contactsError) {
+              console.error('Error inserting contacts:', contactsError);
+            } else {
+              contactCount = validContacts.length;
+            }
+          }
+
+        } catch (fileError) {
+          console.error('Error processing file:', fileError);
         }
       }
+
+      // Update the list with final counts and status
+      const { error: updateError } = await supabase
+        .from('email_lists')
+        .update({
+          count: contactCount,
+          duplicates: duplicateCount,
+          invalid: invalidCount,
+          status: 'active',
+          quality: contactCount > 1000 ? 'excellent' : contactCount > 500 ? 'good' : 'fair',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', listData.id);
+
+      if (updateError) {
+        console.error('Error updating list counts:', updateError);
+      }
+
+      alert(`Email list created successfully! Added ${contactCount} contacts.`);
+      
+      // Reset form
+      setListName('');
+      setListSource('');
+      setDescription('');
+      setTags('');
+      setAutoClean(false);
+      setDuplicateCheck(false);
+      setGdprCompliance(false);
+      setUploadedFile(null);
+      setIsDialogOpen(false);
+      
+      // Refresh the lists
+      fetchEmailLists();
+      
+    } catch (err) {
+      console.error('Full error object:', err);
+      const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
+      alert('Error creating list: ' + errorMessage);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Delete email list
+  const handleDeleteList = async (listId: number) => {
+    if (!confirm('Are you sure you want to delete this email list? This will also delete all associated contacts.')) {
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('email_lists')
+        .delete()
+        .eq('id', listId);
+
+      if (error) {
+        throw error;
+      }
+
+      alert('Email list deleted successfully!');
+      fetchEmailLists();
     } catch (error) {
-      console.error(`Error processing file ${file.name}:`, error);
-      alert(`Failed to process ${file.name}`);
+      console.error('Error deleting list:', error);
+      alert('Error deleting list');
     }
-  }
-};
+  };
 
-
-
-const filteredLists = lists.filter(list => {
-  // Filter by file status if needed
-  let matchesStatus = true;
-  if (filterStatus !== 'all') {
-    if (filterStatus === 'with-file') {
-      matchesStatus = !!list.file_path;
-    } else if (filterStatus === 'no-file') {
-      matchesStatus = !list.file_path;
-    }
-  }
-  
-  const matchesSearch = list.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        list.description.toLowerCase().includes(searchQuery.toLowerCase());
-  return matchesStatus && matchesSearch;
-});
-
-
-
+  // Get status color
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'active': return 'bg-green-100 text-green-800 hover:bg-green-100';
-      case 'processing': return 'bg-yellow-100 text-yellow-800 hover:bg-yellow-100';
-      case 'error': return 'bg-red-100 text-red-800 hover:bg-red-100';
-      case 'archived': return 'bg-gray-100 text-gray-800 hover:bg-gray-100';
-      default: return 'bg-gray-100 text-gray-800 hover:bg-gray-100';
+      case 'active':
+        return 'bg-green-100 text-green-800 hover:bg-green-100';
+      case 'processing':
+        return 'bg-yellow-100 text-yellow-800 hover:bg-yellow-100';
+      case 'error':
+        return 'bg-red-100 text-red-800 hover:bg-red-100';
+      case 'archived':
+        return 'bg-gray-100 text-gray-800 hover:bg-gray-100';
+      default:
+        return 'bg-gray-100 text-gray-800 hover:bg-gray-100';
     }
   };
 
-  const getQualityColor = (quality: string) => {
+  // Get quality color
+  const getQualityColor = (quality?: string) => {
     switch (quality) {
-      case 'excellent': return 'text-green-600';
-      case 'good': return 'text-blue-600';
-      case 'fair': return 'text-yellow-600';
-      case 'poor': return 'text-red-600';
-      default: return 'text-gray-600';
+      case 'excellent':
+        return 'text-green-600';
+      case 'good':
+        return 'text-blue-600';
+      case 'fair':
+        return 'text-yellow-600';
+      case 'poor':
+        return 'text-red-600';
+      default:
+        return 'text-gray-600';
     }
   };
 
-  const getQualityIcon = (quality: string) => {
+  // Get quality icon
+  const getQualityIcon = (quality?: string) => {
     switch (quality) {
-      case 'excellent': return <Star className="w-4 h-4 text-green-500" />;
-      case 'good': return <CheckCircle className="w-4 h-4 text-blue-500" />;
-      case 'fair': return <AlertCircle className="w-4 h-4 text-yellow-500" />;
-      case 'poor': return <AlertTriangle className="w-4 h-4 text-red-500" />;
-      default: return <Info className="w-4 h-4 text-gray-500" />;
+      case 'excellent':
+        return <Star className="w-4 h-4 text-green-500" />;
+      case 'good':
+        return <CheckCircle className="w-4 h-4 text-blue-500" />;
+      case 'fair':
+        return <AlertCircle className="w-4 h-4 text-yellow-500" />;
+      case 'poor':
+        return <AlertTriangle className="w-4 h-4 text-red-500" />;
+      default:
+        return <Info className="w-4 h-4 text-gray-500" />;
     }
   };
+
+  // Filter lists
+  const filteredLists = emailLists.filter(list => {
+    const matchesStatus = filterStatus === 'all' || list.status === filterStatus;
+    const matchesSearch = list.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         list.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         list.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()));
+    return matchesStatus && matchesSearch;
+  });
+
+  // Download template
+  const downloadTemplate = () => {
+    if (!selectedTemplate) return;
+    
+    const template = templates.find(t => t.id === selectedTemplate);
+    if (!template) return;
+
+    const csvContent = template.columns.join(',') + '\n' + 
+      template.columns.map(col => `sample_${col}`).join(',');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.style.display = 'none';
+    a.href = url;
+    a.download = `${template.name.toLowerCase().replace(/\s+/g, '_')}_template.csv`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  };
+
+  // Export contacts as CSV
+  const exportContacts = async (listId: number, listName: string) => {
+    try {
+      const contacts = await fetchEmailContacts(listId);
+      if (contacts.length === 0) {
+        alert('No contacts to export');
+        return;
+      }
+
+      const headers = ['email', 'first_name', 'last_name', 'full_name', 'company', 'phone', 'location', 'job_title', 'status'];
+      const csvContent = [
+        headers.join(','),
+        ...contacts.map(contact => 
+          headers.map(header => contact[header as keyof EmailContact] || '').join(',')
+        )
+      ].join('\n');
+
+      const blob = new Blob([csvContent], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = `${listName.toLowerCase().replace(/\s+/g, '_')}_contacts.csv`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      console.error('Error exporting contacts:', error);
+      alert('Error exporting contacts');
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar />
@@ -405,152 +675,196 @@ const filteredLists = lists.filter(list => {
         <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gray-50">
           <div className="container mx-auto px-6 py-8">
             {/* Header */}
-          <motion.div 
-            initial={{ opacity: 0, y: -20 }} 
-            animate={{ opacity: 1, y: 0 }} 
-            transition={{ duration: 0.4 }}
-          >
-            <div className="flex items-center justify-between">
-              {/* Left Section */}
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">Email List Management</h1>
-                <p className="text-gray-600 mt-2">
-                  Upload, manage, and optimize your email subscriber lists
-                </p>
-              </div>
-
-              {/* Right Actions */}
-              <div className="flex items-center space-x-3">
-                <Button variant="outline">
-                  <Download className="w-4 h-4 mr-2" />
-                  Templates
-                </Button>
-
-                <Button variant="outline">
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  Sync
-                </Button>
-
-                {/* Create New List Dialog */}
-                <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white">
-                      <Plus className="w-4 h-4 mr-2" />
-                      New List
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-                    <DialogHeader>
-                      <DialogTitle>Create New Email List</DialogTitle>
-                      <DialogDescription>
-                        Set up a new email list with custom settings and segmentation
-                      </DialogDescription>
-                    </DialogHeader>
-
-                    {/* Form Content */}
-                    <div className="space-y-6">
-                      {/* List Name + Source */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mb-8"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-3xl font-bold text-gray-900">Email List Management</h1>
+                  <p className="text-gray-600 mt-2">
+                    Upload, manage, and optimize your email subscriber lists for campaigns
+                  </p>
+                </div>
+                <div className="flex items-center space-x-3">
+                  <Button variant="outline" onClick={() => fetchEmailLists()}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Refresh
+                  </Button>
+                  
+                  {/* Create New List Dialog */}
+                  <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700">
+                        <Plus className="w-4 h-4 mr-2" />
+                        New List
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+                      <DialogHeader>
+                        <DialogTitle>Create New Email List</DialogTitle>
+                        <DialogDescription>
+                          Set up a new email list with custom settings and upload your contacts
+                        </DialogDescription>
+                      </DialogHeader>
+                      
+                      <div className="space-y-6">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <Label htmlFor="list-name">List Name *</Label>
+                            <Input 
+                              id="list-name" 
+                              placeholder="Enter list name"
+                              value={listName}
+                              onChange={(e) => setListName(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="list-source">Source</Label>
+                            <Select value={listSource} onValueChange={setListSource}>
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select source" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="website">Website Signup</SelectItem>
+                                <SelectItem value="import">File Import</SelectItem>
+                                <SelectItem value="api">API Integration</SelectItem>
+                                <SelectItem value="manual">Manual Entry</SelectItem>
+                                <SelectItem value="social">Social Media</SelectItem>
+                                <SelectItem value="event">Event Registration</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                        
                         <div>
-                          <Label htmlFor="list-name">List Name</Label>
-                          <Input 
-                            id="list-name" 
-                            placeholder="Enter list name"
-                            value={newListName}
-                            onChange={(e) => setNewListName(e.target.value)}
+                          <Label htmlFor="list-description">Description</Label>
+                          <Textarea 
+                            id="list-description" 
+                            placeholder="Describe this email list..."
+                            rows={3}
+                            value={description}
+                            onChange={(e) => setDescription(e.target.value)}
                           />
                         </div>
+
+                        {/* Upload Section */}
+                        <div className="space-y-3">
+                          <Label>Upload Contacts (CSV/Excel)</Label>
+                          <div className="border-2 border-dashed border-gray-300 rounded-lg p-6">
+                            <div className="text-center">
+                              <Upload className="mx-auto h-12 w-12 text-gray-400" />
+                              <div className="mt-4">
+                                <Label htmlFor="file-upload" className="cursor-pointer">
+                                  <span className="mt-2 block text-sm font-medium text-gray-900">
+                                    Drop your CSV file here or click to upload
+                                  </span>
+                                  <span className="mt-1 block text-xs text-gray-500">
+                                    CSV, Excel files up to 10MB. Headers: email, name, company, etc.
+                                  </span>
+                                </Label>
+                                <Input
+                                  id="file-upload"
+                                  type="file"
+                                  className="sr-only"
+                                  accept=".csv,.xlsx,.xls"
+                                  onChange={handleFileUpload}
+                                />
+                              </div>
+                            </div>
+                            {uploadedFile && (
+                              <div className="mt-4 flex items-center justify-between bg-gray-50 p-3 rounded">
+                                <div className="flex items-center">
+                                  <FileText className="h-5 w-5 text-blue-500 mr-2" />
+                                  <span className="text-sm text-gray-900">{uploadedFile.name}</span>
+                                  <span className="text-xs text-gray-500 ml-2">
+                                    ({(uploadedFile.size / 1024).toFixed(1)} KB)
+                                  </span>
+                                </div>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setUploadedFile(null)}
+                                >
+                                  <X className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        
                         <div>
-                          <Label htmlFor="list-source">Source</Label>
-                          <Select value={newListSource} onValueChange={setNewListSource}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select source" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="website">Website Signup</SelectItem>
-                              <SelectItem value="import">File Import</SelectItem>
-                              <SelectItem value="api">API Integration</SelectItem>
-                              <SelectItem value="manual">Manual Entry</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          <Label htmlFor="list-tags">Tags</Label>
+                          <Input 
+                            id="list-tags" 
+                            placeholder="Enter tags separated by commas"
+                            value={tags}
+                            onChange={(e) => setTags(e.target.value)}
+                          />
                         </div>
-                      </div>
-
-                      {/* Description */}
-                      <div>
-                        <Label htmlFor="list-description">Description</Label>
-                        <Textarea 
-                          id="list-description" 
-                          placeholder="Describe this email list..."
-                          rows={3}
-                          value={newListDescription}
-                          onChange={(e) => setNewListDescription(e.target.value)}
-                        />
-                      </div>
-
-                      {/* Tags */}
-                      <div>
-                        <Label htmlFor="list-tags">Tags</Label>
-                        <Input 
-                          id="list-tags" 
-                          placeholder="Enter tags separated by commas"
-                          value={newListTags}
-                          onChange={(e) => setNewListTags(e.target.value)}
-                        />
-                      </div>
-
-                      {/* Advanced Settings */}
-                      <div className="space-y-3">
-                        <Label>Advanced Settings</Label>
-                        <div className="space-y-2">
-                          <div className="flex items-center space-x-2">
-                            <Switch 
-                              id="auto-clean" 
-                              checked={autoClean}
-                              onCheckedChange={setAutoClean}
-                            />
-                            <Label htmlFor="auto-clean">Auto-clean invalid emails</Label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <Switch 
-                              id="duplicate-check"
-                              checked={duplicateCheck}
-                              onCheckedChange={setDuplicateCheck}
-                            />
-                            <Label htmlFor="duplicate-check">Remove duplicates</Label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <Switch 
-                              id="gdpr-compliance"
-                              checked={gdprCompliance}
-                              onCheckedChange={setGdprCompliance}
-                            />
-                            <Label htmlFor="gdpr-compliance">GDPR compliance mode</Label>
+                        
+                        <div className="space-y-3">
+                          <Label>Processing Options</Label>
+                          <div className="space-y-2">
+                            <div className="flex items-center space-x-2">
+                              <Switch 
+                                id="auto-clean" 
+                                checked={autoClean}
+                                onCheckedChange={setAutoClean}
+                              />
+                              <Label htmlFor="auto-clean">Auto-clean invalid emails</Label>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <Switch 
+                                id="duplicate-check" 
+                                checked={duplicateCheck}
+                                onCheckedChange={setDuplicateCheck}
+                              />
+                              <Label htmlFor="duplicate-check">Remove duplicates</Label>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <Switch 
+                                id="gdpr-compliance" 
+                                checked={gdprCompliance}
+                                onCheckedChange={setGdprCompliance}
+                              />
+                              <Label htmlFor="gdpr-compliance">GDPR compliance mode</Label>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-
-                    <DialogFooter>
-                      <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
-                        Cancel
-                      </Button>
-                      <Button
-                        className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white"
-                        onClick={createNewList}
-                      >
-                        Create List
-                      </Button>
-                    </DialogFooter>
-                  </DialogContent>
-
-                </Dialog>
+                      
+                      <DialogFooter>
+                        <Button 
+                          variant="outline" 
+                          onClick={() => setIsDialogOpen(false)}
+                          disabled={isLoading}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700"
+                          onClick={handleCreateList}
+                          disabled={isLoading}
+                        >
+                          {isLoading ? (
+                            <>
+                              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                              Processing...
+                            </>
+                          ) : (
+                            'Create List'
+                          )}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                </div>
               </div>
-            </div>
-          </motion.div>
+            </motion.div>
 
-
-            {/* Enhanced Stats Cards */}
+            {/* Stats Cards */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
@@ -564,14 +878,10 @@ const filteredLists = lists.filter(list => {
                       <div>
                         <p className="text-sm font-medium text-gray-600">Total Lists</p>
                         <p className="text-2xl font-bold text-gray-900 mt-2">{uploadStats.totalLists}</p>
-                        <p className="text-sm text-green-600 mt-1">+2 this month</p>
                       </div>
-                      <div className="p-3 rounded-lg bg-gradient-to-r from-blue-500 to-blue-600 group-hover:scale-110 transition-transform">
+                      <div className="p-3 rounded-lg bg-gradient-to-r from-blue-500 to-blue-600">
                         <Database className="w-6 h-6 text-white" />
                       </div>
-                    </div>
-                    <div className="mt-4">
-                      <Progress value={75} className="h-2" />
                     </div>
                   </CardContent>
                 </Card>
@@ -589,14 +899,10 @@ const filteredLists = lists.filter(list => {
                       <div>
                         <p className="text-sm font-medium text-gray-600">Total Contacts</p>
                         <p className="text-2xl font-bold text-gray-900 mt-2">{uploadStats.totalContacts.toLocaleString()}</p>
-                        <p className="text-sm text-green-600 mt-1">+1,234 this week</p>
                       </div>
-                      <div className="p-3 rounded-lg bg-gradient-to-r from-green-500 to-green-600 group-hover:scale-110 transition-transform">
+                      <div className="p-3 rounded-lg bg-gradient-to-r from-green-500 to-green-600">
                         <Users className="w-6 h-6 text-white" />
                       </div>
-                    </div>
-                    <div className="mt-4">
-                      <Progress value={85} className="h-2" />
                     </div>
                   </CardContent>
                 </Card>
@@ -614,14 +920,10 @@ const filteredLists = lists.filter(list => {
                       <div>
                         <p className="text-sm font-medium text-gray-600">This Month</p>
                         <p className="text-2xl font-bold text-gray-900 mt-2">+{uploadStats.thisMonth.toLocaleString()}</p>
-                        <p className="text-sm text-blue-600 mt-1">New subscribers</p>
                       </div>
-                      <div className="p-3 rounded-lg bg-gradient-to-r from-purple-500 to-purple-600 group-hover:scale-110 transition-transform">
+                      <div className="p-3 rounded-lg bg-gradient-to-r from-purple-500 to-purple-600">
                         <TrendingUp className="w-6 h-6 text-white" />
                       </div>
-                    </div>
-                    <div className="mt-4">
-                      <Progress value={65} className="h-2" />
                     </div>
                   </CardContent>
                 </Card>
@@ -639,14 +941,10 @@ const filteredLists = lists.filter(list => {
                       <div>
                         <p className="text-sm font-medium text-gray-600">Avg. Quality</p>
                         <p className="text-2xl font-bold text-gray-900 mt-2">{uploadStats.avgQuality}%</p>
-                        <p className="text-sm text-green-600 mt-1">Excellent rating</p>
                       </div>
-                      <div className="p-3 rounded-lg bg-gradient-to-r from-orange-500 to-orange-600 group-hover:scale-110 transition-transform">
+                      <div className="p-3 rounded-lg bg-gradient-to-r from-orange-500 to-orange-600">
                         <Star className="w-6 h-6 text-white" />
                       </div>
-                    </div>
-                    <div className="mt-4">
-                      <Progress value={uploadStats.avgQuality} className="h-2" />
                     </div>
                   </CardContent>
                 </Card>
@@ -665,55 +963,17 @@ const filteredLists = lists.filter(list => {
                     <CardHeader>
                       <CardTitle className="flex items-center">
                         <Upload className="w-5 h-5 mr-2 text-blue-500" />
-                        Upload Email Lists
+                        Templates & Resources
                       </CardTitle>
                       <CardDescription>
-                        Drag and drop your CSV or Excel files, or choose from templates
+                        Download templates to format your email lists correctly
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <Tabs defaultValue="upload" className="w-full">
-                        <TabsList className="grid w-full grid-cols-2">
-                          <TabsTrigger value="upload">File Upload</TabsTrigger>
-                          <TabsTrigger value="templates">Templates</TabsTrigger>
+                      <Tabs defaultValue="templates" className="w-full">
+                        <TabsList className="grid w-full grid-cols-1">
+                          <TabsTrigger value="templates">Download Templates</TabsTrigger>
                         </TabsList>
-                        
-                        <TabsContent value="upload" className="space-y-4">
-                          {/* File Requirements */}
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <div className="p-4 bg-blue-50 rounded-lg">
-                              <div className="flex items-start">
-                                <FileCheck className="w-5 h-5 text-blue-500 mr-2 flex-shrink-0 mt-0.5" />
-                                <div>
-                                  <p className="text-sm font-medium text-blue-900 mb-1">
-                                    File Requirements
-                                  </p>
-                                  <ul className="text-sm text-blue-800 space-y-1">
-                                    <li>• Email column is required</li>
-                                    <li>• Maximum file size: 50MB</li>
-                                    <li>• Supported: CSV, XLSX, XLS</li>
-                                  </ul>
-                                </div>
-                              </div>
-                            </div>
-                            
-                            <div className="p-4 bg-green-50 rounded-lg">
-                              <div className="flex items-start">
-                                <Sparkles className="w-5 h-5 text-green-500 mr-2 flex-shrink-0 mt-0.5" />
-                                <div>
-                                  <p className="text-sm font-medium text-green-900 mb-1">
-                                    Smart Features
-                                  </p>
-                                  <ul className="text-sm text-green-800 space-y-1">
-                                    <li>• Auto-detect duplicates</li>
-                                    <li>• Email validation</li>
-                                    <li>• Smart column mapping</li>
-                                  </ul>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </TabsContent>
                         
                         <TabsContent value="templates" className="space-y-4">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -739,13 +999,12 @@ const filteredLists = lists.filter(list => {
                                   </div>
                                 </div>
                                 <div className="flex flex-wrap gap-1">
-                                  {template.columns.map((column: string) => (
+                                  {template.columns.map((column) => (
                                     <Badge key={column} variant="outline" className="text-xs">
                                       {column}
                                     </Badge>
                                   ))}
                                 </div>
-
                               </motion.div>
                             ))}
                           </div>
@@ -754,6 +1013,7 @@ const filteredLists = lists.filter(list => {
                             <Button
                               disabled={!selectedTemplate}
                               className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700"
+                              onClick={downloadTemplate}
                             >
                               <Download className="w-4 h-4 mr-2" />
                               Download Template
@@ -775,12 +1035,12 @@ const filteredLists = lists.filter(list => {
               >
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-lg">Quick Actions</CardTitle>
+                    <CardTitle className="text-lg">Campaign Actions</CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <Button variant="outline" className="w-full justify-start">
-                      <Wand2 className="w-4 h-4 mr-2" />
-                      Smart Cleanup
+                      <Mail className="w-4 h-4 mr-2" />
+                      Create Campaign
                     </Button>
                     <Button variant="outline" className="w-full justify-start">
                       <Target className="w-4 h-4 mr-2" />
@@ -788,12 +1048,38 @@ const filteredLists = lists.filter(list => {
                     </Button>
                     <Button variant="outline" className="w-full justify-start">
                       <BarChart3 className="w-4 h-4 mr-2" />
-                      Analyze Quality
+                      View Analytics
                     </Button>
                     <Button variant="outline" className="w-full justify-start">
-                      <Share2 className="w-4 h-4 mr-2" />
-                      Export Data
+                      <Wand2 className="w-4 h-4 mr-2" />
+                      Clean Lists
                     </Button>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-lg">CSV Format Tips</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-3 text-sm">
+                      <div className="flex items-start">
+                        <CheckCircle className="w-4 h-4 text-green-500 mr-2 flex-shrink-0 mt-0.5" />
+                        <p>Required column: <strong>email</strong></p>
+                      </div>
+                      <div className="flex items-start">
+                        <CheckCircle className="w-4 h-4 text-green-500 mr-2 flex-shrink-0 mt-0.5" />
+                        <p>Optional: first_name, last_name, company</p>
+                      </div>
+                      <div className="flex items-start">
+                        <CheckCircle className="w-4 h-4 text-green-500 mr-2 flex-shrink-0 mt-0.5" />
+                        <p>Remove empty rows before uploading</p>
+                      </div>
+                      <div className="flex items-start">
+                        <CheckCircle className="w-4 h-4 text-green-500 mr-2 flex-shrink-0 mt-0.5" />
+                        <p>Use comma-separated values (CSV)</p>
+                      </div>
+                    </div>
                   </CardContent>
                 </Card>
               </motion.div>
@@ -824,12 +1110,13 @@ const filteredLists = lists.filter(list => {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="all">All Lists</SelectItem>
-                          <SelectItem value="with-file">With File</SelectItem>
-                          <SelectItem value="no-file">No File</SelectItem>
+                          <SelectItem value="all">All Status</SelectItem>
+                          <SelectItem value="active">Active</SelectItem>
+                          <SelectItem value="processing">Processing</SelectItem>
+                          <SelectItem value="error">Error</SelectItem>
+                          <SelectItem value="archived">Archived</SelectItem>
                         </SelectContent>
                       </Select>
-
                     </div>
                     <div className="flex items-center space-x-2">
                       <Button
@@ -858,321 +1145,405 @@ const filteredLists = lists.filter(list => {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.8 }}
             >
-              {viewMode === 'grid' ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <AnimatePresence>
-                  {filteredLists.map((list, index) => (
-                    <motion.div
-                      key={list.id}
-                      initial={{ opacity: 0, scale: 0.9 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, scale: 0.9 }}
-                      transition={{ delay: index * 0.1 }}
-                      whileHover={{ y: -5, scale: 1.02 }}
-                      className="group"
+              {isLoadingLists ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+                  <span className="ml-2 text-gray-600">Loading email lists...</span>
+                </div>
+              ) : filteredLists.length === 0 ? (
+                <Card>
+                  <CardContent className="p-12 text-center">
+                    <Database className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">No Email Lists Found</h3>
+                    <p className="text-gray-500 mb-6">
+                      {searchQuery || filterStatus !== 'all' 
+                        ? 'No lists match your current filters.' 
+                        : 'Get started by creating your first email list with contacts.'}
+                    </p>
+                    <Button 
+                      onClick={() => setIsDialogOpen(true)}
+                      className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700"
                     >
-                      <Card className="h-full hover:shadow-xl transition-all duration-300 border-0 shadow-md">
-                        <CardHeader className="pb-3">
-                          <div className="flex items-start justify-between">
-                            <div className="flex-1">
-                              <div className="flex items-center space-x-2 mb-2">
-                              </div>
-                              <CardTitle className="text-lg group-hover:text-blue-600 transition-colors">
-                                {list.name}
-                              </CardTitle>
-                              <CardDescription className="mt-1">
-                                {list.description}
-                              </CardDescription>
-                            </div>
-                            <Button variant="ghost" size="sm">
-                              <MoreHorizontal className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="pt-0">
-                          <div className="space-y-4">
-                            <div className="grid grid-cols-2 gap-4 text-sm">
-                              <div>
-                                <p className="text-gray-500">Contacts</p>
-                                 <p className="font-semibold">{list.contacts || 0}</p>
-                              </div>
-                              <div>
-                                <p className="text-gray-500">Uploaded Date</p>
-                                <p className="font-semibold">{new Date(list.uploaded_at).toLocaleDateString()}</p>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-between pt-4 border-t">
-                              <div className="text-xs text-gray-500">
-                              </div>
-                              <div className="flex items-center space-x-1">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => {
-                                    if (list.file_path) {
-                                      const { data } = supabase.storage
-                                        .from('csv-uploads')
-                                        .getPublicUrl(list.file_path);
-
-                                      if (data?.publicUrl) {
-                                        window.open(data.publicUrl);
-                                      } else {
-                                        alert("Unable to get file URL.");
-                                      }
-                                    } else {
-                                      alert("No CSV file uploaded for this list.");
-                                    }
-                                  }}
-                                >
-                                  <Copy className="w-4 h-4" />
-                                </Button>
-
-                              </div>
-                            </div>
-
-                          </div>
-                        </CardContent>
-                      </Card>
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              </div>
-            ) : (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Your Email Lists</CardTitle>
-                  <CardDescription>
-                    Manage all your email lists and their performance metrics
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    <AnimatePresence>
-                      {filteredLists.map((list, index) => (
-                        <motion.div
-                          key={list.id}
-                          initial={{ opacity: 0, x: -20 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: -20 }}
-                          transition={{ delay: index * 0.1 }}
-                          className="flex items-center justify-between p-4 bg-gradient-to-r from-gray-50 to-gray-100 rounded-lg hover:from-blue-50 hover:to-purple-50 transition-all duration-300 group"
-                        >
-                          <div className="flex items-center flex-1">
-                            <div className="w-12 h-12 rounded-full bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
-                              <Users className="w-6 h-6 text-white" />
-                            </div>
-                            <div className="flex-1">
-                              <div className="flex items-center space-x-3 mb-1">
-                                <h4 className="font-medium text-gray-900 group-hover:text-blue-600 transition-colors">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Create Your First List
+                    </Button>
+                  </CardContent>
+                </Card>
+              ) : viewMode === 'grid' ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <AnimatePresence>
+                    {filteredLists.map((list, index) => (
+                      <motion.div
+                        key={list.id}
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.9 }}
+                        transition={{ delay: index * 0.1 }}
+                        whileHover={{ y: -5, scale: 1.02 }}
+                        className="group"
+                      >
+                        <Card className="h-full hover:shadow-xl transition-all duration-300 border-0 shadow-md">
+                          <CardHeader className="pb-3">
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center space-x-2 mb-2">
+                                  <Badge
+                                    variant="secondary"
+                                    className={getStatusColor(list.status)}
+                                  >
+                                    {list.status}
+                                  </Badge>
+                                  {getQualityIcon(list.quality)}
+                                </div>
+                                <CardTitle className="text-lg group-hover:text-blue-600 transition-colors">
                                   {list.name}
-                                </h4>
+                                </CardTitle>
+                                <CardDescription className="mt-1">
+                                  {list.description}
+                                </CardDescription>
                               </div>
-                              <p className="text-sm text-gray-600 mb-2">{list.description}</p>
-                              <div className="flex items-center space-x-6 text-sm text-gray-500">
-                                <div className="flex items-center">
-                                  <Users className="w-4 h-4 mr-1" />
-                                  <span className="font-semibold">{list.contacts || 0}</span>
+                              <Button variant="ghost" size="sm">
+                                <MoreHorizontal className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </CardHeader>
+                          <CardContent className="pt-0">
+                            <div className="space-y-4">
+                              <div className="grid grid-cols-2 gap-4 text-sm">
+                                <div>
+                                  <p className="text-gray-500">Contacts</p>
+                                  <p className="font-semibold">{(list.count || 0).toLocaleString()}</p>
                                 </div>
-                                <div className="flex items-center">
-                                  <Clock className="w-4 h-4 mr-1" />
-                                  {new Date(list.uploaded_at).toLocaleDateString()}
+                                <div>
+                                  <p className="text-gray-500">Quality</p>
+                                  <p className={`font-semibold capitalize ${getQualityColor(list.quality)}`}>
+                                    {list.quality || 'Unknown'}
+                                  </p>
+                                </div>
+                                <div>
+                                  <p className="text-gray-500">Duplicates</p>
+                                  <p className="font-semibold text-yellow-600">{list.duplicates || 0}</p>
+                                </div>
+                                <div>
+                                  <p className="text-gray-500">Invalid</p>
+                                  <p className="font-semibold text-red-600">{list.invalid || 0}</p>
+                                </div>
+                              </div>
+                              
+                              <div className="flex flex-wrap gap-1">
+                                {list.tags.map((tag) => (
+                                  <Badge key={tag} variant="outline" className="text-xs">
+                                    {tag}
+                                  </Badge>
+                                ))}
+                              </div>
+                              
+                              <div className="flex items-center justify-between pt-4 border-t">
+                                <div className="text-xs text-gray-500">
+                                  <p>Uploaded {list.uploaded}</p>
+                                  <p>Source: {list.source}</p>
+                                </div>
+                                <div className="flex items-center space-x-1">
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm"
+                                    onClick={() => handleViewContacts(list.id)}
+                                    title="View Contacts"
+                                  >
+                                    <Eye className="w-4 h-4" />
+                                  </Button>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm"
+                                    onClick={() => exportContacts(list.id, list.name)}
+                                    title="Export Contacts"
+                                  >
+                                    <Download className="w-4 h-4" />
+                                  </Button>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm"
+                                    onClick={() => handleDeleteList(list.id)}
+                                    title="Delete List"
+                                  >
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
                                 </div>
                               </div>
                             </div>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <Button 
-                              variant="ghost" 
-                              size="sm" 
-                              title="View"
-                              onClick={() => previewCSVData(list)}
-                              disabled={isLoadingPreview}
-                            >
-                              <Eye className="w-4 h-4" />
-                            </Button>
-                            <Button variant="ghost" size="sm" title="Edit">
-                              <Edit className="w-4 h-4" />
-                            </Button>
-                            <Button variant="ghost" size="sm" title="Download">
-                              <Download className="w-4 h-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              title="Upload File"
-                              onClick={() => {
-                                const input = document.createElement('input');
-                                input.type = 'file';
-                                input.accept = '.csv,.xlsx,.xls';
-                                input.onchange = (e) => {
-                                  const target = e.target as HTMLInputElement;
-                                  if (target.files) {
-                                    handleFileSelection(Array.from(target.files), list.id);
-                                  }
-                                };
-                                input.click();
-                              }}
-                            >
-                              <Upload className="w-4 h-4" />
-                            </Button>
-                            <Button variant="ghost" size="sm" title="Delete">
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </motion.div>
-                      ))}
-                    </AnimatePresence>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </motion.div>
-{/* CSV Preview Dialog - UNIVERSAL VERSION */}
-<Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
-  <DialogContent className="sm:max-w-[95vw] max-h-[90vh]">
-    <DialogHeader>
-      <DialogTitle>Complete CSV File - {previewListName}</DialogTitle>
+                          </CardContent>
+                        </Card>
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+              ) : (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Your Email Lists</CardTitle>
+                    <CardDescription>
+                      Manage your email lists and their contacts for campaigns
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-4">
+                      <AnimatePresence>
+                        {filteredLists.map((list, index) => (
+                          <motion.div
+                            key={list.id}
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            transition={{ delay: index * 0.1 }}
+                            className="flex items-center justify-between p-4 bg-gradient-to-r from-gray-50 to-gray-100 rounded-lg hover:from-blue-50 hover:to-purple-50 transition-all duration-300 group"
+                          >
+                            <div className="flex items-center flex-1">
+                              <div className="w-12 h-12 rounded-full bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                                <Users className="w-6 h-6 text-white" />
+                              </div>
+                              <div className="flex-1">
+                                <div className="flex items-center space-x-3 mb-1">
+                                  <h4 className="font-medium text-gray-900 group-hover:text-blue-600 transition-colors">
+                                    {list.name}
+                                  </h4>
+                                  <Badge
+                                    variant="secondary"
+                                    className={getStatusColor(list.status)}
+                                  >
+                                    {list.status}
+                                  </Badge>
+                                  {getQualityIcon(list.quality)}
+                                </div>
+                                <p className="text-sm text-gray-600 mb-2">{list.description}</p>
+                                <div className="flex items-center space-x-6 text-sm text-gray-500">
+                                  <div className="flex items-center">
+                                    <Users className="w-4 h-4 mr-1" />
+                                    {(list.count || 0).toLocaleString()} contacts
+                                  </div>
+                                  <div className="flex items-center">
+                                    <AlertTriangle className="w-4 h-4 mr-1" />
+                                    {list.duplicates || 0} duplicates
+                                  </div>
+                                  <div className="flex items-center">
+                                    <X className="w-4 h-4 mr-1" />
+                                    {list.invalid || 0} invalid
+                                  </div>
+                                  <div className="flex items-center">
+                                    <Clock className="w-4 h-4 mr-1" />
+                                    {list.uploaded}
+                                  </div>
+                                </div>
+                                <div className="flex flex-wrap gap-1 mt-2">
+                                  {list.tags.map((tag) => (
+                                    <Badge key={tag} variant="outline" className="text-xs">
+                                      {tag}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <Button 
+                                variant="ghost" 
+                                size="sm"
+                                onClick={() => handleViewContacts(list.id)}
+                                title="View Contacts"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </Button>
+                              <Button 
+                                variant="ghost" 
+                                size="sm"
+                                onClick={() => exportContacts(list.id, list.name)}
+                                title="Export Contacts"
+                              >
+                                <Download className="w-4 h-4" />
+                              </Button>
+                              <Button variant="ghost" size="sm" title="Create Campaign">
+                                <Mail className="w-4 h-4" />
+                              </Button>
+                              <Button 
+                                variant="ghost" 
+                                size="sm"
+                                onClick={() => handleDeleteList(list.id)}
+                                title="Delete List"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </motion.div>
+
+            {/* Contacts Preview Dialog */}
+{/* Contacts Preview Dialog - FIXED VERSION */}
+<Dialog open={isContactsDialogOpen} onOpenChange={setIsContactsDialogOpen}>
+  <DialogContent className="sm:max-w-[900px] h-[80vh] flex flex-col">
+    <DialogHeader className="flex-shrink-0">
+      <DialogTitle className="flex items-center">
+        <Users className="w-5 h-5 mr-2" />
+        Email Contacts
+        {selectedListId && (
+          <Badge variant="secondary" className="ml-2">
+            {previewData.length} contacts
+          </Badge>
+        )}
+      </DialogTitle>
       <DialogDescription>
-        Showing all{" "}
-        {previewData.length > 0 ? previewData.length - 1 : 0} rows from the
-        uploaded CSV file
+        View and manage contacts in this email list
       </DialogDescription>
     </DialogHeader>
-
-    <div className="overflow-auto max-h-[70vh] border rounded">
-      {isLoadingPreview ? (
-        <div className="flex items-center justify-center py-8">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-          <span className="ml-2">Loading complete file...</span>
-        </div>
-      ) : previewData.length > 0 ? (
-        <div className="overflow-x-auto">
-          <table className="min-w-full table-auto border-collapse border border-gray-300">
-            <thead>
-              <tr className="bg-blue-50">
-                {Array.isArray(previewData[0])
-                  ? // case 1: CSV parsed as array of arrays
-                    previewData[0].map((header, index) => (
-                      <th
-                        key={`header-${index}`}
-                        className="border border-gray-300 px-4 py-2 text-left font-semibold text-gray-900 text-sm"
-                      >
-                        {header}
-                      </th>
-                    ))
-                  : // case 2: CSV parsed as array of objects
-                    Object.keys(previewData[0] || {}).map((header, index) => (
-                      <th
-                        key={`header-${index}`}
-                        className="border border-gray-300 px-4 py-2 text-left font-semibold text-gray-900 text-sm"
-                      >
-                        {header}
-                      </th>
-                    ))}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.isArray(previewData[0])
-                ? // array-of-arrays → skip first row (headers)
-                  previewData.slice(1).map((row, rowIndex) => (
-                    <tr
-                      key={`row-${rowIndex}`}
-                      className="hover:bg-gray-50"
-                    >
-                      {row.map((cell, cellIndex) => (
-                        <td
-                          key={`cell-${rowIndex}-${cellIndex}`}
-                          className="border border-gray-300 px-4 py-2 text-sm text-gray-700"
-                        >
-                          {cell || "-"}
-                        </td>
-                      ))}
-                    </tr>
-                  ))
-                : // array-of-objects
-                  previewData.map((row, rowIndex) => (
-                    <tr
-                      key={`row-${rowIndex}`}
-                      className="hover:bg-gray-50"
-                    >
-                      {Object.values(row).map((cell, cellIndex) => (
-                        <td
-                          key={`cell-${rowIndex}-${cellIndex}`}
-                          className="border border-gray-300 px-4 py-2 text-sm text-gray-700"
-                        >
-                          {cell || "-"}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-            </tbody>
-          </table>
+    
+    {/* Scrollable Content Area */}
+    <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+      {previewData.length > 0 ? (
+        <div className="flex-1 overflow-auto border rounded-lg">
+          {/* Table Header - Sticky */}
+          <div className="bg-gray-50 border-b sticky top-0 z-10">
+            <div className="grid grid-cols-5 gap-4 p-3 font-medium text-sm">
+              <div className="flex items-center">
+                <Mail className="w-4 h-4 mr-1" />
+                Email Address
+              </div>
+              <div className="flex items-center">
+                <User className="w-4 h-4 mr-1" />
+                Full Name
+              </div>
+              <div className="flex items-center">
+                <Building className="w-4 h-4 mr-1" />
+                Company
+              </div>
+              <div className="flex items-center">
+                <Phone className="w-4 h-4 mr-1" />
+                Phone
+              </div>
+              <div className="flex items-center">
+                <Activity className="w-4 h-4 mr-1" />
+                Status
+              </div>
+            </div>
+          </div>
+          
+          {/* Table Body - Scrollable */}
+          <div className="divide-y divide-gray-200">
+            {previewData.map((contact, index) => (
+              <div key={contact.id} className="grid grid-cols-5 gap-4 p-3 hover:bg-gray-50 transition-colors">
+                <div className="font-medium text-blue-600 truncate" title={contact.email}>
+                  {contact.email}
+                </div>
+                <div className="text-gray-900 truncate">
+                  {contact.full_name || 
+                   `${contact.first_name || ''} ${contact.last_name || ''}`.trim() || 
+                   <span className="text-gray-400 italic">No name</span>
+                  }
+                </div>
+                <div className="text-gray-600 truncate">
+                  {contact.company || <span className="text-gray-400 italic">No company</span>}
+                </div>
+                <div className="text-gray-600 truncate">
+                  {contact.phone || <span className="text-gray-400 italic">No phone</span>}
+                </div>
+                <div>
+                  <Badge 
+                    variant="secondary" 
+                    className={
+                      contact.status === 'active' 
+                        ? 'bg-green-100 text-green-800' 
+                        : contact.status === 'unsubscribed'
+                        ? 'bg-red-100 text-red-800'
+                        : contact.status === 'bounced'
+                        ? 'bg-yellow-100 text-yellow-800'
+                        : 'bg-gray-100 text-gray-800'
+                    }
+                  >
+                    {contact.status}
+                  </Badge>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       ) : (
-        <div className="flex flex-col items-center justify-center py-12">
-          <div className="text-gray-400 mb-4">
-            <FileText className="w-16 h-16" />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <Users className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+            <h3 className="text-lg font-medium text-gray-900 mb-2">No Contacts Found</h3>
+            <p className="text-gray-500">This email list doesn't contain any contacts yet.</p>
           </div>
-          <h3 className="text-lg font-medium text-gray-900 mb-2">
-            No File Available
-          </h3>
-          <p className="text-gray-500 text-center max-w-sm">
-            This list doesn't have an uploaded CSV file to preview. Upload a
-            file first to see the data.
-          </p>
         </div>
       )}
     </div>
-
-    <DialogFooter className="flex justify-between items-center">
-      <div className="text-sm text-gray-500">
-        {previewData.length > 0 && (
-          <span>
-            Showing{" "}
-            {Array.isArray(previewData[0])
-              ? previewData.length - 1
-              : previewData.length}{" "}
-            rows ×{" "}
-            {Array.isArray(previewData[0])
-              ? previewData[0]?.length || 0
-              : Object.keys(previewData[0] || {}).length}
-            {" "}columns
-          </span>
-        )}
+    
+    {/* Summary Stats */}
+    {previewData.length > 0 && (
+      <div className="flex-shrink-0 mt-4 p-3 bg-gray-50 rounded-lg">
+        <div className="flex items-center justify-between text-sm">
+          <div className="flex items-center space-x-4 text-gray-600">
+            <div className="flex items-center">
+              <CheckCircle className="w-4 h-4 mr-1 text-green-500" />
+              {previewData.filter(c => c.status === 'active').length} Active
+            </div>
+            <div className="flex items-center">
+              <X className="w-4 h-4 mr-1 text-red-500" />
+              {previewData.filter(c => c.status === 'unsubscribed').length} Unsubscribed
+            </div>
+            <div className="flex items-center">
+              <AlertTriangle className="w-4 h-4 mr-1 text-yellow-500" />
+              {previewData.filter(c => c.status === 'bounced').length} Bounced
+            </div>
+          </div>
+          <div className="text-gray-500">
+            Total: {previewData.length} contacts
+          </div>
+        </div>
       </div>
-      <div className="flex gap-2">
-        <Button variant="outline" onClick={() => setIsPreviewOpen(false)}>
-          Close
-        </Button>
-        {previewData.length > 0 && (
-          <Button
-            onClick={() => {
-              const list = lists.find((l) => l.name === previewListName);
-              if (list?.file_path) {
-                const { data } = supabase.storage
-                  .from("csv-uploads")
-                  .getPublicUrl(list.file_path);
-                if (data?.publicUrl) {
-                  window.open(data.publicUrl);
-                }
-              }
-            }}
-            className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white"
-          >
-            <Download className="w-4 h-4 mr-2" />
-            Download Full File
+    )}
+    
+    <DialogFooter className="flex-shrink-0 mt-4">
+      <div className="flex justify-between w-full">
+        <div className="flex items-center space-x-2">
+          <Button variant="outline" size="sm">
+            <Target className="w-4 h-4 mr-2" />
+            Create Segment
           </Button>
-        )}
+          <Button variant="outline" size="sm">
+            <Mail className="w-4 h-4 mr-2" />
+            Start Campaign
+          </Button>
+        </div>
+        
+        <div className="flex items-center space-x-2">
+          <Button variant="outline" onClick={() => setIsContactsDialogOpen(false)}>
+            Close
+          </Button>
+          {selectedListId && (
+            <Button 
+              onClick={() => {
+                const list = emailLists.find(l => l.id === selectedListId);
+                if (list) {
+                  exportContacts(selectedListId, list.name);
+                }
+              }}
+              className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Export CSV
+            </Button>
+          )}
+        </div>
       </div>
     </DialogFooter>
   </DialogContent>
 </Dialog>
 
-        </div>
-      </main>
+          </div>
+        </main>
+      </div>
     </div>
-    </div>
-
   );
 }
