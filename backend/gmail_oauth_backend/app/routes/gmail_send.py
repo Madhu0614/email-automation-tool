@@ -19,7 +19,6 @@ class EmailRequest(BaseModel):
     subject: str
     body: str
 
-
 def get_gmail_access_token(refresh_token: str):
     """Get fresh Gmail API access token using refresh token"""
     try:
@@ -42,7 +41,6 @@ def get_gmail_access_token(refresh_token: str):
     except Exception as e:
         logger.error(f"Error refreshing token: {e}")
         raise HTTPException(status_code=500, detail=f"Token refresh error: {str(e)}")
-
 
 def send_via_gmail_api(request: EmailRequest, refresh_token: str):
     """Send email using Gmail API"""
@@ -73,7 +71,6 @@ def send_via_gmail_api(request: EmailRequest, refresh_token: str):
 
     logger.info("Email sent successfully via Gmail API")
     return {"message": "✅ Email sent successfully via Gmail API"}
-
 
 def send_via_smtp(request: EmailRequest, config: dict):
     """Send email using SMTP"""
@@ -108,34 +105,64 @@ def send_via_smtp(request: EmailRequest, config: dict):
     logger.info("Email sent successfully via SMTP")
     return {"message": "✅ Email sent successfully via SMTP"}
 
-
-@router.post("/send-email")
-def send_email(request: EmailRequest):
+# New function for internal use by campaign processor
+async def send_email_via_config(from_email: str, to_email: str, subject: str, body: str):
+    """
+    Internal function to send email using stored configuration
+    Returns True if successful, False otherwise
+    """
     try:
-        logger.info(f"Sending email from {request.from_email} to {request.to_email}")
+        logger.info(f"Sending email from {from_email} to {to_email}")
 
         response = supabase.table("email_configs").select(
             "provider, smtp_host, smtp_port, smtp_username, smtp_password, use_tls, use_ssl, refresh_token"
-        ).eq("user_email", request.from_email).single().execute()
+        ).eq("user_email", from_email).single().execute()
 
         if not response.data:
-            raise HTTPException(status_code=404, detail="Email config not found")
+            logger.error(f"Email config not found for {from_email}")
+            return False
 
         config = response.data
+        request = EmailRequest(
+            from_email=from_email,
+            to_email=to_email,
+            subject=subject,
+            body=body
+        )
 
         # Gmail OAuth
         if config["provider"] == "gmail_oauth" and config.get("refresh_token"):
-            return send_via_gmail_api(request, config["refresh_token"])
+            send_via_gmail_api(request, config["refresh_token"])
+            return True
 
         # SMTP
         elif config["provider"] == "smtp":
-            return send_via_smtp(request, config)
+            send_via_smtp(request, config)
+            return True
 
         else:
-            raise HTTPException(
-                status_code=400,
-                detail="No valid email configuration found"
-            )
+            logger.error(f"No valid email configuration found for {from_email}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error in send_email_via_config: {e}")
+        return False
+
+@router.post("/send-email")
+async def send_email(request: EmailRequest):
+    """Public endpoint to send email"""
+    try:
+        success = await send_email_via_config(
+            request.from_email, 
+            request.to_email, 
+            request.subject, 
+            request.body
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to send email")
+            
+        return {"message": "✅ Email sent successfully"}
 
     except HTTPException:
         raise
