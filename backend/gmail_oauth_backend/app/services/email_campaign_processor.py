@@ -1,6 +1,7 @@
 import asyncio
 import re
 import json
+import random
 from datetime import datetime, timezone
 import logging
 from app.services.supabase_client import supabase
@@ -93,6 +94,32 @@ def safe_parse_json(json_str, fallback=None):
     
     return fallback or []
 
+def send_email_with_proper_handling(send_email_via_config, from_email: str, to_email: str, subject: str, body: str) -> tuple[bool, str]:
+    """
+    Wrapper function to handle both dict and bool responses from email sending
+    Returns: (success: bool, error_message: str)
+    """
+    try:
+        result = send_email_via_config(from_email, to_email, subject, body)
+        
+        # Handle dictionary response (new format)
+        if isinstance(result, dict):
+            success = result.get("success", False)
+            error_msg = result.get("error", "Unknown error") if not success else ""
+            return success, error_msg
+        
+        # Handle boolean response (legacy format)
+        elif isinstance(result, bool):
+            return result, "" if result else "Email sending failed"
+        
+        # Handle other types (treat as falsy)
+        else:
+            return False, f"Unexpected response type: {type(result)}"
+            
+    except Exception as e:
+        logging.error(f"❌ Exception in email sending: {e}")
+        return False, str(e)
+
 async def process_campaigns():
     """Process scheduled email campaigns"""
     now = datetime.now(timezone.utc).replace(microsecond=0)
@@ -103,7 +130,7 @@ async def process_campaigns():
 
     try:
         all_campaigns_resp = supabase.table("campaigns").select(
-            "id, name, scheduled_at, status, email_list_id, sender_id, content, subject_line, email_content, sent_count, delivered_count, bounce_count"
+            "id, name, scheduled_at, status, email_list_id, sender_id, content, subject_line, email_content, sent_count, delivered_count, bounce_count, pause_between_emails"
         ).execute()
     except Exception as e:
         logging.error(f"❌ Failed to fetch campaigns: {e}")
@@ -115,22 +142,18 @@ async def process_campaigns():
 
     due_campaigns = []
     for c in all_campaigns_resp.data or []:
-        # Ensure campaign is a dictionary
         if not isinstance(c, dict):
-            logging.error(f"❌ Campaign data is not a dictionary: {type(c)} - {c}")
             continue
             
         campaign_id = c.get("id")
         scheduled_raw = c.get("scheduled_at")
         
         if not scheduled_raw:
-            logging.warning(f"⚠️ Campaign {campaign_id} has no scheduled_at value")
             continue
             
         try:
             scheduled_dt = datetime.fromisoformat(scheduled_raw.replace("Z", "+00:00"))
         except Exception as e:
-            logging.error(f"⚠️ Could not parse scheduled_at={scheduled_raw} for campaign {campaign_id}: {e}")
             continue
 
         if c.get("status") in ["scheduled", "running"] and scheduled_dt <= now:
@@ -141,9 +164,7 @@ async def process_campaigns():
         return
 
     for campaign in due_campaigns:
-        # Ensure campaign is a dictionary
         if not isinstance(campaign, dict):
-            logging.error(f"❌ Campaign is not a dictionary: {type(campaign)} - {campaign}")
             continue
             
         campaign_id = campaign.get("id")
@@ -151,12 +172,12 @@ async def process_campaigns():
         email_list_id = campaign.get("email_list_id")
         sender_id = campaign.get("sender_id")
 
-        # Debug campaign data
-        logging.info(f"🔍 Debug campaign {campaign_id}:")
-        logging.info(f"  - Campaign data type: {type(campaign)}")
-        logging.info(f"  - Campaign keys: {list(campaign.keys())}")
-        logging.info(f"  - Email list ID: {email_list_id} (type: {type(email_list_id)})")
-        logging.info(f"  - Sender ID: {sender_id} (type: {type(sender_id)})")
+        # Get pause_between_emails from the campaign record (300 seconds from your data)
+        pause_between_emails = campaign.get("pause_between_emails", 300)  # Default 5 minutes
+
+        logging.info(f"📧 Campaign {campaign_id} settings:")
+        logging.info(f"  - Name: {campaign_name}")
+        logging.info(f"  - Pause between emails: {pause_between_emails} seconds")
 
         if not email_list_id or not sender_id:
             logging.error(f"❌ Campaign {campaign_id} missing email_list_id or sender_id")
@@ -171,39 +192,19 @@ async def process_campaigns():
             # Get sender configuration
             sender_resp = supabase.table("email_configs").select("*").eq("id", sender_id).single().execute()
             sender = sender_resp.data
-            
-            # Debug sender data
-            logging.info(f"🔍 Sender data type: {type(sender)}")
-            
-            # Handle case where sender might be a string
-            if isinstance(sender, str):
-                try:
-                    sender = json.loads(sender)
-                    logging.info(f"✅ Parsed sender data from JSON string for campaign {campaign_id}")
-                except json.JSONDecodeError as e:
-                    logging.error(f"❌ Failed to parse sender data as JSON for campaign {campaign_id}: {e}")
-                    sender = None
 
             if not sender or not isinstance(sender, dict):
-                logging.error(f"❌ Sender config not found or invalid for sender_id {sender_id}. Type: {type(sender)}. Skipping campaign {campaign_id}.")
+                logging.error(f"❌ Sender config not found for sender_id {sender_id}")
                 supabase.table("campaigns").update({"status": "failed"}).eq("id", campaign_id).execute()
                 continue
 
-            # ✅ Load campaign steps from `content`
+            # Parse campaign content
             steps = []
             if campaign.get("content"):
                 content = campaign.get("content")
-                logging.info(f"🔍 Content type: {type(content)}")
-                logging.info(f"🔍 Content preview: {content[:500]}...")  # Show first 500 chars
-                
                 steps = safe_parse_json(content, [])
                 
-                if not steps:
-                    logging.warning(f"⚠️ Campaign {campaign_id} content could not be parsed as steps array")
-            
-            # fallback: single subject/body from subject_line + email_content
             if not steps:
-                logging.info(f"📧 Using fallback step for campaign {campaign_id}")
                 steps = [{
                     "subject": normalize_text(campaign.get("subject_line")),
                     "body": normalize_text(campaign.get("email_content")),
@@ -211,10 +212,6 @@ async def process_campaigns():
                 }]
 
             logging.info(f"📧 Campaign {campaign_id} has {len(steps)} steps")
-            if steps and len(steps) > 0:
-                logging.info(f"🔍 First step type: {type(steps[0])}")
-                if isinstance(steps[0], dict):
-                    logging.info(f"🔍 First step keys: {list(steps[0].keys())}")
 
             # Get contacts
             try:
@@ -226,24 +223,22 @@ async def process_campaigns():
                     .execute()
                 contacts = contacts_resp.data or []
             except Exception as e:
-                logging.error(f"❌ Failed to fetch contacts for campaign {campaign_id}: {e}")
-                supabase.table("campaigns").update({"status": "failed"}).eq("id", campaign_id).execute()
+                logging.error(f"❌ Failed to fetch contacts: {e}")
                 continue
             
             if not contacts:
-                logging.warning(f"⚠️ No active opted-in contacts for list {email_list_id}. Marking campaign completed.")
                 supabase.table("campaigns").update({"status": "completed"}).eq("id", campaign_id).execute()
                 continue
 
             logging.info(f"👥 Found {len(contacts)} contacts for campaign {campaign_id}")
 
-            sent_count = 0
+            # ✅ Get current sent_count from database to continue from where we left off
+            current_sent_count = campaign.get("sent_count", 0)
+            sent_count = current_sent_count
             failed_count = 0
 
             for step_idx, step in enumerate(steps):
                 if not isinstance(step, dict):
-                    logging.error(f"❌ Step {step_idx} is not a dictionary: {type(step)} - {step}")
-                    failed_count += len(contacts)
                     continue
                     
                 subject = normalize_text(step.get("subject", ""))
@@ -253,14 +248,12 @@ async def process_campaigns():
 
                 for contact_idx, contact in enumerate(contacts):
                     if not isinstance(contact, dict):
-                        logging.error(f"❌ Contact {contact_idx} is not a dictionary: {type(contact)} - {contact}")
                         failed_count += 1
                         continue
                         
                     recipient_email = contact.get("email")
 
                     if not validate_email(recipient_email):
-                        logging.warning(f"⚠️ Invalid email address: {recipient_email}")
                         failed_count += 1
                         continue
 
@@ -269,7 +262,8 @@ async def process_campaigns():
                         body = render_pitch(body_template, contact)
                         subj = render_pitch(subject, contact)
 
-                        success = send_email_via_config(
+                        success, error_msg = send_email_with_proper_handling(
+                            send_email_via_config,
                             from_email=sender.get("user_email"),
                             to_email=recipient_email,
                             subject=subj,
@@ -279,20 +273,35 @@ async def process_campaigns():
                         if success:
                             sent_count += 1
                             logging.info(f"✅ Sent email to {recipient_email}")
+                            
+                            # ✅ Update sent_count in database after EVERY successful email send
+                            try:
+                                supabase.table("campaigns").update({
+                                    "sent_count": sent_count,
+                                    "updated_at": datetime.utcnow().replace(microsecond=0).isoformat()
+                                }).eq("id", campaign_id).execute()
+                                logging.info(f"📊 Updated sent_count to {sent_count} for campaign {campaign_id}")
+                            except Exception as update_error:
+                                logging.error(f"❌ Failed to update sent_count: {update_error}")
                         else:
                             failed_count += 1
-                            logging.error(f"❌ Failed to send email to {recipient_email}")
+                            logging.error(f"❌ Failed to send to {recipient_email}: {error_msg}")
 
-                        await asyncio.sleep(1)
+                        # Use the campaign-specific pause_between_emails with randomization
+                        random_factor = random.uniform(0.8, 1.2)  # ±20% randomness
+                        actual_delay = pause_between_emails * random_factor
+                        
+                        logging.info(f"⏱️ Pausing {actual_delay:.1f}s before next email (configured: {pause_between_emails}s)")
+                        await asyncio.sleep(actual_delay)
 
                     except Exception as e:
                         failed_count += 1
-                        logging.error(f"❌ Error processing contact {recipient_email}: {e}")
+                        logging.error(f"❌ Error sending to {recipient_email}: {e}")
 
+            # ✅ Final campaign completion update
             total_contacts = len(contacts) * len(steps)
-            completion_rate = round((sent_count / total_contacts) * 100) if total_contacts else 0  # Round to integer
+            completion_rate = round((sent_count / total_contacts) * 100) if total_contacts else 0
 
-            # Update campaign status
             if sent_count == total_contacts:
                 new_status = "completed"
             elif sent_count > 0:
@@ -303,24 +312,25 @@ async def process_campaigns():
             try:
                 supabase.table("campaigns").update({
                     "status": new_status,
-                    "sent_count": sent_count,
-                    "completion_rate": completion_rate,  # Now rounded to integer
+                    "sent_count": sent_count,  # Final sent count
+                    "completion_rate": completion_rate,
                     "total_steps": len(steps),
                     "completed_at": datetime.utcnow().replace(microsecond=0).isoformat() if new_status in ["completed", "failed"] else None,
                     "updated_at": datetime.utcnow().replace(microsecond=0).isoformat(),
-                    "sent_at": datetime.utcnow().replace(microsecond=0).isoformat() if sent_count else None
+                    "sent_at": datetime.utcnow().replace(microsecond=0).isoformat() if sent_count > current_sent_count else None
                 }).eq("id", campaign_id).execute()
+                logging.info(f"🎯 Final campaign update: {new_status}")
             except Exception as e:
-                logging.error(f"❌ Failed to update campaign {campaign_id} status: {e}")
+                logging.error(f"❌ Failed to update final campaign status: {e}")
 
-            logging.info(f"✅ Campaign {campaign_id}: Sent {sent_count}/{total_contacts} emails. Failed: {failed_count}. Status → {new_status}")
+            logging.info(f"✅ Campaign {campaign_id}: Sent {sent_count}/{total_contacts} emails with {pause_between_emails}s delays. Failed: {failed_count}. Status → {new_status}")
 
         except Exception as e:
-            logging.error(f"❌ Unexpected error processing campaign {campaign_id}: {e}")
+            logging.error(f"❌ Error processing campaign {campaign_id}: {e}")
             try:
                 supabase.table("campaigns").update({"status": "failed"}).eq("id", campaign_id).execute()
-            except Exception as update_error:
-                logging.error(f"❌ Failed to mark campaign {campaign_id} as failed: {update_error}")
+            except:
+                pass
 
 def process_campaigns_sync():
     """Synchronous wrapper for the async process_campaigns function"""

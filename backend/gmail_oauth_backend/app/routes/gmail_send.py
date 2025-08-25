@@ -5,8 +5,11 @@ import requests
 import base64
 import os
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.utils import formataddr
+from email.header import Header
 import logging
 
 logger = logging.getLogger(__name__)
@@ -41,10 +44,10 @@ def send_via_gmail_oauth(refresh_token: str, from_email: str, to_email: str, sub
     access_token = get_gmail_access_token(refresh_token)
 
     # Build MIME message
-    message = MIMEText(body)
+    message = MIMEText(body, "html", "utf-8")
     message["to"] = to_email
     message["from"] = from_email
-    message["subject"] = subject
+    message["subject"] = str(Header(subject, "utf-8"))
 
     raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
@@ -115,54 +118,44 @@ def send_via_outlook_oauth(refresh_token: str, from_email: str, to_email: str, s
 def send_via_smtp(config: dict, from_email: str, to_email: str, subject: str, body: str) -> dict:
     """Send email using SMTP"""
     try:
-        # Extract SMTP configuration from your database structure
         smtp_host = config.get("smtp_host")
-        smtp_port = config.get("smtp_port", 587)
+        smtp_port = int(config.get("smtp_port", 587))
         smtp_username = config.get("smtp_username")
         smtp_password = config.get("smtp_password")
         use_tls = config.get("use_tls", False)
         use_ssl = config.get("use_ssl", False)
         from_name = config.get("from_name", from_email)
-        
-        # Validate required fields
+
         if not smtp_host or not smtp_username or not smtp_password:
             error_msg = f"❌ SMTP configuration incomplete for {from_email}"
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
 
-        # Create message
+        # Build message safely
         message = MIMEMultipart("alternative")
-        message["From"] = f"{from_name} <{from_email}>"
-        message["To"] = to_email
-        message["Subject"] = subject
-        
-        # Add HTML content
-        html_part = MIMEText(body, "html")
+        message["From"] = formataddr((str(Header(from_name, "utf-8")), from_email))
+        message["To"] = formataddr(("Recipient", to_email))
+        message["Subject"] = str(Header(subject, "utf-8"))
+
+        # Add HTML body
+        html_part = MIMEText(body, "html", "utf-8")
         message.attach(html_part)
 
-        # Connect to SMTP server
-        if use_ssl:
-            # SSL connection (typically port 465)
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port)
-            logger.info(f"🔐 Connected to SMTP SSL server {smtp_host}:{smtp_port}")
+        # Connect to SMTP
+        if use_ssl and smtp_port == 465:
+            logger.info(f"🔐 Connecting to SMTP SSL {smtp_host}:{smtp_port}")
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+                server.login(smtp_username, smtp_password)
+                server.sendmail(from_email, [to_email], message.as_string())
         else:
-            # Regular SMTP connection
-            server = smtplib.SMTP(smtp_host, smtp_port)
-            logger.info(f"📧 Connected to SMTP server {smtp_host}:{smtp_port}")
-            
-            # Start TLS if enabled
-            if use_tls:
-                server.starttls()
-                logger.info("🔐 Started TLS encryption")
-
-        # Login and send
-        server.login(smtp_username, smtp_password)
-        logger.info(f"✅ SMTP authentication successful for {smtp_username}")
-        
-        # Send the email
-        text = message.as_string()
-        server.sendmail(from_email, to_email, text)
-        server.quit()
+            logger.info(f"📧 Connecting to SMTP {smtp_host}:{smtp_port}")
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                if use_tls:
+                    server.starttls(context=ssl.create_default_context())
+                    logger.info("🔐 Started TLS encryption")
+                server.login(smtp_username, smtp_password)
+                server.sendmail(from_email, [to_email], message.as_string())
 
         logger.info(f"✅ SMTP: Email sent successfully to {to_email}")
         return {"success": True, "message": f"SMTP: Email sent to {to_email}"}
@@ -171,17 +164,14 @@ def send_via_smtp(config: dict, from_email: str, to_email: str, subject: str, bo
         error_msg = f"❌ SMTP Authentication failed: {str(e)}"
         logger.error(error_msg)
         return {"success": False, "error": error_msg}
-    
     except smtplib.SMTPRecipientsRefused as e:
         error_msg = f"❌ SMTP Recipients refused: {str(e)}"
         logger.error(error_msg)
         return {"success": False, "error": error_msg}
-    
     except smtplib.SMTPServerDisconnected as e:
         error_msg = f"❌ SMTP Server disconnected: {str(e)}"
         logger.error(error_msg)
         return {"success": False, "error": error_msg}
-    
     except Exception as e:
         error_msg = f"❌ SMTP error: {str(e)}"
         logger.error(error_msg)
@@ -189,12 +179,8 @@ def send_via_smtp(config: dict, from_email: str, to_email: str, subject: str, bo
 
 # ------------------ Unified Function ------------------ #
 def send_email_via_config(from_email: str, to_email: str, subject: str, body: str) -> dict:
-    """
-    Look up provider in Supabase and send email accordingly.
-    Supports: gmail_oauth, microsoft_oauth, smtp
-    """
+    """Look up provider in Supabase and send email accordingly."""
     try:
-        # Fetch email config with all necessary fields
         response = supabase.table("email_configs").select(
             "provider, refresh_token, from_name, smtp_host, smtp_port, use_tls, use_ssl, smtp_username, smtp_password"
         ).eq("user_email", from_email).single().execute()
@@ -211,13 +197,10 @@ def send_email_via_config(from_email: str, to_email: str, subject: str, body: st
 
         if provider == "gmail_oauth":
             return send_via_gmail_oauth(refresh_token, from_email, to_email, subject, body)
-
         elif provider == "microsoft_oauth":
             return send_via_outlook_oauth(refresh_token, from_email, to_email, subject, body)
-
         elif provider == "smtp":
             return send_via_smtp(response.data, from_email, to_email, subject, body)
-
         else:
             error_msg = f"❌ Unsupported provider: {provider}"
             logger.error(error_msg)
@@ -230,10 +213,7 @@ def send_email_via_config(from_email: str, to_email: str, subject: str, body: st
 # ------------------ FastAPI Route ------------------ #
 @router.post("/send-email")
 def send_email(request: EmailRequest):
-    """
-    API endpoint to send email via Gmail OAuth, Outlook OAuth, or SMTP.
-    Provider is selected from Supabase email_configs.
-    """
+    """API endpoint to send email via Gmail OAuth, Outlook OAuth, or SMTP."""
     result = send_email_via_config(
         from_email=request.from_email,
         to_email=request.to_email,

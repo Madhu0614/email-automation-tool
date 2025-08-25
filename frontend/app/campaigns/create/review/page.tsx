@@ -216,7 +216,6 @@ function to24HourTime(time: string, ampm: 'AM' | 'PM'): string {
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 }
   const handleLaunchCampaign = async () => {
-    // ✅ Now using router from component scope
     if (!campaignSchedule.selectedSender) {
       alert('Please select an email sender account');
       return;
@@ -228,12 +227,23 @@ function to24HourTime(time: string, ampm: 'AM' | 'PM'): string {
       const time24h = to24HourTime(campaignSchedule.startTime, campaignSchedule.startAmPm);
       const scheduledAt = `${campaignSchedule.startDate}T${time24h}:00.000Z`;
 
+      // Convert pauseBetweenEmails from minutes to seconds for backend
+      const pauseBetweenEmailsSeconds = campaignSchedule.pauseBetweenEmails * 60;
+
+      console.log('Launching campaign with settings:', {
+        scheduledAt,
+        pauseBetweenEmailsSeconds,
+        selectedSender: campaignSchedule.selectedSender
+      });
+
+      // Save all frontend values to database
       const { error } = await supabase
         .from('campaigns')
         .update({
-          status: 'scheduled',
-          sender_id: campaignSchedule.selectedSender,
-          scheduled_at: scheduledAt,
+          status: 'scheduled',                           // ✅ Set campaign as ready to run
+          sender_id: campaignSchedule.selectedSender,    // ✅ Email account to send from
+          scheduled_at: scheduledAt,                     // ✅ When to start
+          pause_between_emails: pauseBetweenEmailsSeconds, // ✅ Delay between emails (seconds)          // ✅ User's timezone
           updated_at: new Date().toISOString(),
         })
         .eq('id', Number(campaignData.id));
@@ -245,7 +255,7 @@ function to24HourTime(time: string, ampm: 'AM' | 'PM'): string {
       localStorage.removeItem('campaignName');
       localStorage.removeItem('selectedListId');
 
-      // ✅ Success - redirect to success page
+      // Success - redirect to success page
       router.push('/campaigns/create/success');
       
     } catch (error) {
@@ -255,6 +265,7 @@ function to24HourTime(time: string, ampm: 'AM' | 'PM'): string {
       setIsLaunching(false);
     }
   };
+
 
     // ✅ Added handleNext function
   const handleNext = () => {
@@ -580,61 +591,61 @@ function to24HourTime(time: string, ampm: 'AM' | 'PM'): string {
                     </CardContent>
                   </Card>
 
-                  {/* Delivery Settings */}
-                  <Card className="border-0 shadow-xl bg-white/80 backdrop-blur-sm">
-                    <CardHeader>
-                      <h3 className="text-xl font-bold text-slate-900 flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 flex items-center justify-center">
-                          <Settings className="h-4 w-4 text-white" />
-                        </div>
-                        Delivery Settings
-                      </h3>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="text-sm font-semibold text-slate-700">Max Emails/Day</label>
-                          <Input
-                            type="number"
-                            min="1"
-                            value={campaignSchedule.maxEmailsPerDay}
-                            onChange={(e) => handleScheduleChange('maxEmailsPerDay', parseInt(e.target.value))}
-                            className="mt-2 h-11"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-sm font-semibold text-slate-700">Pause Between (min)</label>
-                          <Input
-                            type="number"
-                            min="1"
-                            value={campaignSchedule.pauseBetweenEmails}
-                            onChange={(e) => handleScheduleChange('pauseBetweenEmails', parseInt(e.target.value))}
-                            className="mt-2 h-11"
-                          />
-                        </div>
-                      </div>
-
-                      {/* Smart Features Toggles */}
-                      <div className="space-y-3 pt-2">
-                        {[
-                          { key: 'trackingEnabled', title: 'Email Tracking', desc: 'Track opens and clicks' },
-                          { key: 'pauseOnWeekends', title: 'Pause Weekends', desc: 'Skip Saturday & Sunday' },
-                          { key: 'enableSmartTiming', title: 'Smart Timing', desc: 'Optimize send times' }
-                        ].map((feature) => (
-                          <div key={feature.key} className="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50/50">
-                            <div>
-                              <p className="text-sm font-medium text-slate-700">{feature.title}</p>
-                              <p className="text-xs text-slate-500">{feature.desc}</p>
-                            </div>
-                            <Switch
-                              checked={campaignSchedule[feature.key as keyof CampaignSchedule] as boolean}
-                              onCheckedChange={(checked) => handleScheduleChange(feature.key as keyof CampaignSchedule, checked)}
-                            />
+                    {/* Email Delivery Settings (updated) */}
+                    <Card className="border-0 shadow-xl bg-white/80 backdrop-blur-sm">
+                      <CardHeader>
+                        <h3 className="text-xl font-bold text-slate-900 flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 flex items-center justify-center">
+                            <Timer className="h-4 w-4 text-white" />
                           </div>
-                        ))}
-                      </div>
-                    </CardContent>
-                  </Card>
+                          Email Delivery
+                        </h3>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div>
+                          <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                            <Timer className="h-4 w-4" />
+                            Pause Between Emails (minutes)
+                          </label>
+                          <Input
+                            type="number"
+                            min="1"
+                            max="60"
+                            value={campaignSchedule.pauseBetweenEmails}
+                            onChange={(e) =>
+                              handleScheduleChange(
+                                'pauseBetweenEmails',
+                                parseInt(e.target.value)
+                              )
+                            }
+                            className="mt-2 h-11"
+                          />
+                          <p className="text-xs text-slate-500 mt-2">
+                            Time to wait between sending each individual email. Recommended: 5–10 minutes to avoid spam filters.
+                          </p>
+                        </div>
+
+                        {/* Delivery summary */}
+                        <div className="mt-4 p-3 bg-slate-50 rounded-lg">
+                          <p className="text-xs text-slate-600 font-medium mb-2">
+                            Delivery Summary:
+                          </p>
+                          <div className="text-xs text-slate-500 space-y-1">
+                            <p>
+                              • {campaignSchedule.pauseBetweenEmails} minute gap between each email
+                            </p>
+                            <p>
+                              • Total time: ~
+                              {Math.ceil(
+                                (recipientsCount * campaignSchedule.pauseBetweenEmails) / 60
+                              )}{' '}
+                              hours for {recipientsCount} recipients
+                            </p>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+
                 </div>
               </div>
             </div>
