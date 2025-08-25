@@ -1,5 +1,6 @@
-import time
+import asyncio
 import re
+import json
 from datetime import datetime, timezone
 import logging
 from app.services.supabase_client import supabase
@@ -20,22 +21,16 @@ def normalize_text(value):
     return value.strip()
 
 def render_pitch(template: str, contact: dict) -> str:
-    """Render template with contact data - fixed to prevent double rendering"""
+    """Render template with contact data"""
     if not template:
         return ""
-    
     rendered = template
-    # Track replaced placeholders to avoid infinite loops
     replaced_placeholders = set()
-    
     for key, val in contact.items():
         placeholder = f"{{{{{key}}}}}"
         if placeholder in rendered and placeholder not in replaced_placeholders:
-            if val is None:
-                val = ""
-            rendered = rendered.replace(placeholder, str(val))
+            rendered = rendered.replace(placeholder, str(val or ""))
             replaced_placeholders.add(placeholder)
-    
     return rendered
 
 def validate_email(email):
@@ -44,7 +39,7 @@ def validate_email(email):
     return re.match(pattern, email) is not None
 
 async def process_campaigns():
-    """Process scheduled email campaigns - async version"""
+    """Process scheduled email campaigns"""
     now = datetime.now(timezone.utc).replace(microsecond=0)
     logging.info(f"🔍 Checking campaigns scheduled before {now.isoformat()}")
 
@@ -52,7 +47,7 @@ async def process_campaigns():
     from app.routes.gmail_send import send_email_via_config
 
     all_campaigns_resp = supabase.table("campaigns").select(
-        "id, name, scheduled_at, status, email_list_id, sender_id, subject_line, email_content"
+        "id, name, scheduled_at, status, email_list_id, sender_id, content, subject_line, email_content, sent_count, delivered_count, bounce_count"
     ).execute()
 
     due_campaigns = []
@@ -93,13 +88,21 @@ async def process_campaigns():
             supabase.table("campaigns").update({"status": "failed"}).eq("id", campaign_id).execute()
             continue
 
-        subject = normalize_text(campaign.get("subject_line"))
-        body_template = normalize_text(campaign.get("email_content"))
-
-        if not subject or not body_template:
-            logging.warning(f"⚠️ Campaign {campaign_id} missing subject or body. Skipping.")
-            supabase.table("campaigns").update({"status": "failed"}).eq("id", campaign_id).execute()
-            continue
+        # ✅ Load campaign steps from `content`
+        steps = []
+        if campaign.get("content"):
+            try:
+                steps = json.loads(campaign["content"])
+            except Exception as e:
+                logging.error(f"⚠️ Campaign {campaign_id} invalid content JSON: {e}")
+        
+        # fallback: single subject/body from subject_line + email_content
+        if not steps:
+            steps = [{
+                "subject": normalize_text(campaign.get("subject_line")),
+                "body": normalize_text(campaign.get("email_content")),
+                "order": 1
+            }]
 
         # Get contacts
         contacts_resp = supabase.table("email_contacts")\
@@ -117,44 +120,48 @@ async def process_campaigns():
 
         sent_count = 0
         failed_count = 0
-        
-        for contact in contacts:
-            recipient_email = contact.get("email")
-            
-            if not validate_email(recipient_email):
-                logging.warning(f"⚠️ Invalid email address: {recipient_email}")
-                failed_count += 1
-                continue
 
-            try:
-                # Render templates
-                body = render_pitch(body_template, contact)
-                subj = render_pitch(subject, contact)
-                
-                # Use the existing send function
-                success = await send_email_via_config(
-                    from_email=sender.get("user_email"),
-                    to_email=recipient_email,
-                    subject=subj,
-                    body=body
-                )
-                
-                if success:
-                    sent_count += 1
-                    logging.info(f"✅ Sent email to {recipient_email}")
-                else:
+        for step in steps:
+            subject = normalize_text(step.get("subject"))
+            body_template = normalize_text(step.get("body"))
+
+            for contact in contacts:
+                recipient_email = contact.get("email")
+
+                if not validate_email(recipient_email):
+                    logging.warning(f"⚠️ Invalid email address: {recipient_email}")
                     failed_count += 1
-                    logging.error(f"❌ Failed to send email to {recipient_email}")
-                
-                # Add throttling to avoid rate limiting
-                time.sleep(1)
-                
-            except Exception as e:
-                failed_count += 1
-                logging.error(f"❌ Error processing contact {recipient_email}: {e}")
+                    continue
+
+                try:
+                    # Render templates
+                    body = render_pitch(body_template, contact)
+                    subj = render_pitch(subject, contact)
+
+                    success = send_email_via_config(
+                        from_email=sender.get("user_email"),
+                        to_email=recipient_email,
+                        subject=subj,
+                        body=body
+                    )
+
+                    if success:
+                        sent_count += 1
+                        logging.info(f"✅ Sent email to {recipient_email}")
+                    else:
+                        failed_count += 1
+                        logging.error(f"❌ Failed to send email to {recipient_email}")
+
+                    await asyncio.sleep(1)
+
+                except Exception as e:
+                    failed_count += 1
+                    logging.error(f"❌ Error processing contact {recipient_email}: {e}")
+
+        total_contacts = len(contacts) * len(steps)
+        completion_rate = (sent_count / total_contacts) * 100 if total_contacts else 0
 
         # Update campaign status
-        total_contacts = len(contacts)
         if sent_count == total_contacts:
             new_status = "completed"
         elif sent_count > 0:
@@ -166,15 +173,15 @@ async def process_campaigns():
             "status": new_status,
             "sent_count": sent_count,
             "failed_count": failed_count,
-            "total_contacts": total_contacts,
+            "completion_rate": completion_rate,
+            "total_steps": len(steps),
             "completed_at": datetime.utcnow().replace(microsecond=0).isoformat() if new_status in ["completed", "failed"] else None,
-            "updated_at": datetime.utcnow().replace(microsecond=0).isoformat()
+            "updated_at": datetime.utcnow().replace(microsecond=0).isoformat(),
+            "sent_at": datetime.utcnow().replace(microsecond=0).isoformat() if sent_count else None
         }).eq("id", campaign_id).execute()
 
         logging.info(f"✅ Campaign {campaign_id}: Sent {sent_count}/{total_contacts} emails. Failed: {failed_count}. Status → {new_status}")
 
-# Sync wrapper for backwards compatibility
 def process_campaigns_sync():
     """Synchronous wrapper for the async process_campaigns function"""
-    import asyncio
     return asyncio.run(process_campaigns())

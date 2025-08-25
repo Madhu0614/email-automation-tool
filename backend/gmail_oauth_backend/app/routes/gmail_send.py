@@ -5,13 +5,11 @@ import requests
 import base64
 import os
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import smtplib
-import ssl
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
 
 class EmailRequest(BaseModel):
     from_email: str  # Sender email
@@ -19,37 +17,35 @@ class EmailRequest(BaseModel):
     subject: str
     body: str
 
-def get_gmail_access_token(refresh_token: str):
-    """Get fresh Gmail API access token using refresh token"""
-    try:
-        token_url = "https://oauth2.googleapis.com/token"
-        data = {
-            "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-            "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-            "refresh_token": refresh_token,
-            "grant_type": "refresh_token"
-        }
-        
-        response = requests.post(token_url, data=data)
-        if response.status_code != 200:
-            logger.error(f"Token refresh failed: {response.text}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to get access token: {response.text}"
-            )
-        return response.json().get("access_token")
-    except Exception as e:
-        logger.error(f"Error refreshing token: {e}")
-        raise HTTPException(status_code=500, detail=f"Token refresh error: {str(e)}")
 
-def send_via_gmail_api(request: EmailRequest, refresh_token: str):
-    """Send email using Gmail API"""
+# ------------------ Gmail Helpers ------------------ #
+def get_gmail_access_token(refresh_token: str) -> str:
+    """Get fresh Gmail access token using refresh token"""
+    token_url = "https://oauth2.googleapis.com/token"
+    data = {
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token"
+    }
+
+    response = requests.post(token_url, data=data)
+    if response.status_code != 200:
+        logger.error(f"❌ Gmail token refresh failed: {response.text}")
+        raise HTTPException(status_code=500, detail=f"Gmail token refresh failed: {response.text}")
+
+    return response.json().get("access_token")
+
+
+def send_via_gmail_oauth(refresh_token: str, from_email: str, to_email: str, subject: str, body: str) -> dict:
+    """Send email using Gmail OAuth"""
     access_token = get_gmail_access_token(refresh_token)
 
-    message = MIMEText(request.body)
-    message["to"] = request.to_email
-    message["from"] = request.from_email
-    message["subject"] = request.subject
+    # Build MIME message
+    message = MIMEText(body)
+    message["to"] = to_email
+    message["from"] = from_email
+    message["subject"] = subject
 
     raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
@@ -63,109 +59,115 @@ def send_via_gmail_api(request: EmailRequest, refresh_token: str):
     gmail_response = requests.post(gmail_api_url, headers=headers, json=payload)
 
     if gmail_response.status_code not in [200, 202]:
-        logger.error(f"Gmail API error: {gmail_response.text}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Gmail API error: {gmail_response.text}"
-        )
+        error_msg = f"Gmail API error {gmail_response.status_code}: {gmail_response.text}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
 
-    logger.info("Email sent successfully via Gmail API")
-    return {"message": "✅ Email sent successfully via Gmail API"}
+    logger.info(f"✅ Gmail: Sent email to {to_email}")
+    return {"success": True, "message": f"Gmail: Email sent to {to_email}"}
 
-def send_via_smtp(request: EmailRequest, config: dict):
-    """Send email using SMTP"""
-    smtp_host = config["smtp_host"]
-    smtp_port = config["smtp_port"]
-    smtp_username = config["smtp_username"]
-    smtp_password = config["smtp_password"]
-    use_ssl = config.get("use_ssl", False)
-    use_tls = config.get("use_tls", False)
 
-    message = MIMEMultipart()
-    message["From"] = request.from_email
-    message["To"] = request.to_email
-    message["Subject"] = request.subject
-    message.attach(MIMEText(request.body, "plain"))
+# ------------------ Microsoft (Outlook) Helpers ------------------ #
+def get_outlook_access_token(refresh_token: str) -> str:
+    """Get fresh Outlook (Microsoft) access token using refresh token"""
+    token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    data = {
+        "client_id": os.getenv("MICROSOFT_CLIENT_ID"),   # ✅ fixed
+        "client_secret": os.getenv("MICROSOFT_CLIENT_SECRET"),  # ✅ fixed
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token",
+        "scope": "https://graph.microsoft.com/.default offline_access"
+    }
 
-    if use_ssl and int(smtp_port) == 465:
-        logger.info("Using SMTP over SSL")
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
-            server.login(smtp_username, smtp_password)
-            server.sendmail(request.from_email, request.to_email, message.as_string())
-    else:
-        logger.info("Using SMTP with STARTTLS")
-        context = ssl.create_default_context()
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            if use_tls:
-                server.starttls(context=context)
-            server.login(smtp_username, smtp_password)
-            server.sendmail(request.from_email, request.to_email, message.as_string())
+    response = requests.post(token_url, data=data)
+    if response.status_code != 200:
+        logger.error(f"❌ Outlook token refresh failed: {response.text}")
+        raise HTTPException(status_code=500, detail=f"Outlook token refresh failed: {response.text}")
 
-    logger.info("Email sent successfully via SMTP")
-    return {"message": "✅ Email sent successfully via SMTP"}
+    return response.json().get("access_token")
 
-# New function for internal use by campaign processor
-async def send_email_via_config(from_email: str, to_email: str, subject: str, body: str):
+
+def send_via_outlook_oauth(refresh_token: str, from_email: str, to_email: str, subject: str, body: str) -> dict:
+    """Send email using Outlook OAuth (Microsoft Graph API)"""
+    access_token = get_outlook_access_token(refresh_token)
+
+    outlook_api_url = "https://graph.microsoft.com/v1.0/me/sendMail"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "message": {
+            "subject": subject,
+            "body": {"contentType": "HTML", "content": body},
+            "toRecipients": [{"emailAddress": {"address": to_email}}],
+        }
+    }
+
+    outlook_response = requests.post(outlook_api_url, headers=headers, json=payload)
+
+    if outlook_response.status_code not in [200, 202]:
+        error_msg = f"Outlook API error {outlook_response.status_code}: {outlook_response.text}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+
+    logger.info(f"✅ Outlook: Sent email to {to_email}")
+    return {"success": True, "message": f"Outlook: Email sent to {to_email}"}
+
+
+# ------------------ Unified Function ------------------ #
+def send_email_via_config(from_email: str, to_email: str, subject: str, body: str) -> dict:
     """
-    Internal function to send email using stored configuration
-    Returns True if successful, False otherwise
+    Look up provider in Supabase and send email accordingly.
+    Supports: gmail_oauth, microsoft_oauth
     """
     try:
-        logger.info(f"Sending email from {from_email} to {to_email}")
-
+        # Fetch email config
         response = supabase.table("email_configs").select(
-            "provider, smtp_host, smtp_port, smtp_username, smtp_password, use_tls, use_ssl, refresh_token"
+            "provider, refresh_token"
         ).eq("user_email", from_email).single().execute()
 
         if not response.data:
-            logger.error(f"Email config not found for {from_email}")
-            return False
+            error_msg = f"❌ Email config not found in Supabase for: {from_email}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
-        config = response.data
-        request = EmailRequest(
-            from_email=from_email,
-            to_email=to_email,
-            subject=subject,
-            body=body
-        )
+        provider = response.data.get("provider")
+        refresh_token = response.data.get("refresh_token")
 
-        # Gmail OAuth
-        if config["provider"] == "gmail_oauth" and config.get("refresh_token"):
-            send_via_gmail_api(request, config["refresh_token"])
-            return True
+        logger.info(f"📧 Sending email using provider={provider} for {from_email}")
 
-        # SMTP
-        elif config["provider"] == "smtp":
-            send_via_smtp(request, config)
-            return True
+        if provider == "gmail_oauth":
+            return send_via_gmail_oauth(refresh_token, from_email, to_email, subject, body)
+
+        elif provider == "microsoft_oauth":
+            return send_via_outlook_oauth(refresh_token, from_email, to_email, subject, body)
 
         else:
-            logger.error(f"No valid email configuration found for {from_email}")
-            return False
+            error_msg = f"❌ Unsupported provider: {provider}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
     except Exception as e:
-        logger.error(f"Error in send_email_via_config: {e}")
-        return False
+        logger.exception("❌ Unexpected error in send_email_via_config")
+        return {"success": False, "error": str(e)}
 
+
+# ------------------ FastAPI Route ------------------ #
 @router.post("/send-email")
-async def send_email(request: EmailRequest):
-    """Public endpoint to send email"""
-    try:
-        success = await send_email_via_config(
-            request.from_email, 
-            request.to_email, 
-            request.subject, 
-            request.body
-        )
-        
-        if not success:
-            raise HTTPException(status_code=500, detail="Failed to send email")
-            
-        return {"message": "✅ Email sent successfully"}
+def send_email(request: EmailRequest):
+    """
+    API endpoint to send email via Gmail or Outlook OAuth.
+    Provider is selected from Supabase email_configs.
+    """
+    result = send_email_via_config(
+        from_email=request.from_email,
+        to_email=request.to_email,
+        subject=request.subject,
+        body=request.body
+    )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in send_email: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error"))
+
+    return {"message": result.get("message", "✅ Email sent successfully")}

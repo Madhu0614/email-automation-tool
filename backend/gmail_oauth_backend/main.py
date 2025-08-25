@@ -19,7 +19,7 @@ async def campaign_processor_task():
     while True:
         try:
             logger.info("Running campaign processor...")
-            await asyncio.to_thread(process_campaigns)  # Run sync function in thread
+            await process_campaigns()  # Direct await since it's async
         except Exception as e:
             logger.error(f"Error in campaign processor: {e}")
         await asyncio.sleep(60)  # Wait 60 seconds before next check
@@ -62,7 +62,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000", 
-        "https://email-automation-tool-git-main-madhu0614s-projects.vercel.app"
+        "https://email-automation-tool-omega.vercel.app/"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -81,7 +81,7 @@ app.include_router(gmail_send.router, prefix="/email", tags=["Gmail Send"])
 async def manual_process_campaigns():
     """Manual endpoint to trigger campaign processing"""
     try:
-        await asyncio.to_thread(process_campaigns)
+        await process_campaigns()  # Direct await
         return {"status": "success", "message": "Campaign processing completed"}
     except Exception as e:
         # Log error but don't expose details to client
