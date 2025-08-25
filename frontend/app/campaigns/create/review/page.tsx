@@ -215,41 +215,55 @@ function to24HourTime(time: string, ampm: 'AM' | 'PM'): string {
   }
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 }
+  const handleLaunchCampaign = async () => {
+    // ✅ Now using router from component scope
+    if (!campaignSchedule.selectedSender) {
+      alert('Please select an email sender account');
+      return;
+    }
 
-const handleLaunchCampaign = async () => {
-  if (!campaignSchedule.selectedSender) {
-    alert('Please select an email sender account');
-    return;
-  }
+    setIsLaunching(true);
 
-  setIsLaunching(true);
+    try {
+      const time24h = to24HourTime(campaignSchedule.startTime, campaignSchedule.startAmPm);
+      const scheduledAt = `${campaignSchedule.startDate}T${time24h}:00.000Z`;
 
-  try {
-    const time24h = to24HourTime(campaignSchedule.startTime, campaignSchedule.startAmPm);
-    const scheduledAt = `${campaignSchedule.startDate}T${time24h}:00.000Z`;
+      const { error } = await supabase
+        .from('campaigns')
+        .update({
+          status: 'scheduled',
+          sender_id: campaignSchedule.selectedSender,
+          scheduled_at: scheduledAt,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', Number(campaignData.id));
 
-    const { error } = await supabase
-      .from('campaigns')
-      .update({
-        status: 'scheduled',
-        sender_id: campaignSchedule.selectedSender,
-        scheduled_at: scheduledAt,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', Number(campaignData.id));  // type-correct filter
+      if (error) throw error;
 
-    if (error) throw error;
+      // Clear localStorage since campaign is complete
+      localStorage.removeItem('campaignId');
+      localStorage.removeItem('campaignName');
+      localStorage.removeItem('selectedListId');
 
-    // ... rest of your launch logic
-  } catch (error) {
-    console.error('Error launching campaign:', error);
-    alert('Failed to launch campaign. Please try again.');
-  } finally {
-    setIsLaunching(false);
-  }
-};
+      // ✅ Success - redirect to success page
+      router.push('/campaigns/create/success');
+      
+    } catch (error) {
+      console.error('Error launching campaign:', error);
+      alert('Failed to launch campaign. Please try again.');
+    } finally {
+      setIsLaunching(false);
+    }
+  };
 
-
+    // ✅ Added handleNext function
+  const handleNext = () => {
+    // Save current schedule data to localStorage
+    localStorage.setItem('campaignSchedule', JSON.stringify(campaignSchedule));
+    
+    // Navigate to the final review/launch step
+    router.push('/campaigns/create/success');
+  };
 
   const handleBack = () => {
     router.push('/campaigns/create/content');
@@ -652,7 +666,7 @@ const handleLaunchCampaign = async () => {
                 )}
 
                 <Button
-                  onClick={handleLaunchCampaign}
+                  onClick={() => { handleLaunchCampaign(); handleBack(); }}
                   disabled={!campaignSchedule.selectedSender || isLaunching || connectedAccounts.length === 0}
                   className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:via-indigo-700 hover:to-purple-700 shadow-lg hover:shadow-xl transition-all duration-300 px-8 h-12"
                 >
