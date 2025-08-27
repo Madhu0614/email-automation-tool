@@ -62,7 +62,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000", 
-        "https://email-automation-tool-7woxip5gg-madhu0614s-projects.vercel.app/"
+        "https://email-automation-tool-7woxip5gg-madhu0614s-projects.vercel.app/",
+        "https://email-automation-tool-1.onrender.com"
     ],
     allow_credentials=True,
     allow_methods=["*"],
