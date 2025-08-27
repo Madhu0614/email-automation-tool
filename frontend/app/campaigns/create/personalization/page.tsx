@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
+import { API_BASE_URL } from '@/lib/api';
 import { 
   ChevronLeft, 
   Loader2, 
@@ -206,7 +207,7 @@ export default function PersonalizationPage() {
 
   // Updated API call function to match new backend structure
   const generatePersonalizedPitch = async (payload: PitchRequest): Promise<PitchResponse> => {
-    const response = await fetch('http://localhost:8000/ai/generate-pitch', {
+    const response = await fetch(`${API_BASE_URL}/ai/generate-pitch`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
