@@ -139,10 +139,10 @@ export default function CreateCampaignPage() {
       localStorage.setItem('campaignId', campaignId);
       localStorage.setItem('campaignName', campaignName);
       localStorage.setItem('selectedListId', selectedList);
-      
-      // Navigate to step 2 (content creation)
-      router.push('/campaigns/create/content');
-      
+
+      // Navigate to step 2 (personalization)
+      router.push('/campaigns/create/personalization-selection');
+
     } catch (err) {
       console.error('Error with campaign:', err);
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
@@ -301,7 +301,7 @@ export default function CreateCampaignPage() {
                     {localStorage.getItem('campaignId') ? 'Updating...' : 'Creating Campaign...'}
                   </>
                 ) : (
-                  'Continue to Content →'
+                  'Continue →'
                 )}
               </Button>
             </div>

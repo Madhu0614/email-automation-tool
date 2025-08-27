@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from app.routes import gmail_oauth, microsoft_oauth, smtp_email
+from app.routes import gmail_oauth, microsoft_oauth, smtp_email, email_generator  # Add email_generator
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes import email_accounts
 from app.routes import gmail_send
@@ -44,7 +44,7 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def root():
-    return {"status": "FastAPI backend running on Render with campaign processor"}
+    return {"status": "FastAPI backend running with Email Generator and Campaign Processor"}
 
 # Custom exception handler - log errors but don't expose them
 @app.exception_handler(Exception)
@@ -75,6 +75,7 @@ app.include_router(microsoft_oauth.router, prefix="/oauth2", tags=["Microsoft OA
 app.include_router(smtp_email.router, prefix="/email", tags=["SMTP Email"])
 app.include_router(email_accounts.router)
 app.include_router(gmail_send.router, prefix="/email", tags=["Gmail Send"])
+app.include_router(email_generator.router, prefix="/ai", tags=["AI Email Generator"])  # Add this line
 
 # Optional: Add endpoint to manually trigger campaign processing
 @app.post("/admin/process-campaigns")
